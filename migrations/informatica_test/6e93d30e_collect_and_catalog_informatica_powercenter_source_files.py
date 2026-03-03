@@ -1,775 +1,653 @@
 import os
-import json
 import xml.etree.ElementTree as ET
-from datetime import datetime
-from typing import Dict, List, Any, Tuple
-from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import col, lit, current_timestamp, count, countDistinct
+from pyspark.sql import SparkSession
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, TimestampType, ArrayType
+from pyspark.sql.functions import col, lit, current_timestamp, explode, collect_list, struct, count, when
+from datetime import datetime
+import json
+import hashlib
+from typing import Dict, List, Tuple
 import logging
-from pathlib import Path
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 
-class InformaticaArtifactCollector:
+class InformaticaPowerCenterCollector:
     """
     Collects and catalogs Informatica PowerCenter artifacts for migration analysis.
     Processes XML exports, workflow definitions, mappings, sessions, and transformations.
     """
     
-    def __init__(self, spark: SparkSession, source_path: str, output_path: str):
+    def __init__(self, spark: SparkSession, base_path: str, output_path: str):
         """
-        Initialize the artifact collector.
+        Initialize the collector with Spark session and paths.
         
         Args:
             spark: Active SparkSession
-            source_path: Root path containing Informatica XML exports
-            output_path: Path to store processed inventory and metadata
+            base_path: Root path containing Informatica XML exports
+            output_path: Path to write cataloged artifacts
         """
         self.spark = spark
-        self.source_path = source_path
+        self.base_path = base_path
         self.output_path = output_path
-        self.inventory_data = {
-            'workflows': [],
-            'mappings': [],
-            'sessions': [],
-            'transformations': [],
-            'parameter_files': [],
-            'repository_structure': []
-        }
+        self.collection_timestamp = datetime.now()
         
-    def parse_xml_file(self, file_path: str) -> ET.Element:
+    def collect_xml_files(self) -> List[str]:
         """
-        Parse XML file and return root element.
+        Recursively collect all XML files from base path.
+        
+        Returns:
+            List of full paths to XML files
+        """
+        logger.info(f"Collecting XML files from {self.base_path}")
+        xml_files = []
+        
+        try:
+            # Using Spark to read file system paths
+            sc = self.spark.sparkContext
+            hadoop_conf = sc._jsc.hadoopConfiguration()
+            fs = sc._jvm.org.apache.hadoop.fs.FileSystem.get(hadoop_conf)
+            path = sc._jvm.org.apache.hadoop.fs.Path(self.base_path)
+            
+            def traverse_directory(dir_path):
+                file_status_list = fs.listStatus(dir_path)
+                for file_status in file_status_list:
+                    file_path = file_status.getPath()
+                    if file_status.isDirectory():
+                        traverse_directory(file_path)
+                    elif str(file_path).upper().endswith('.XML'):
+                        xml_files.append(str(file_path))
+            
+            traverse_directory(path)
+            logger.info(f"Found {len(xml_files)} XML files")
+            
+        except Exception as e:
+            logger.error(f"Error collecting XML files: {str(e)}")
+            raise
+        
+        return xml_files
+    
+    def parse_workflow_xml(self, xml_path: str) -> Dict:
+        """
+        Parse workflow XML and extract metadata.
         
         Args:
-            file_path: Path to XML file
+            xml_path: Path to workflow XML file
             
         Returns:
-            XML root element
+            Dictionary containing workflow metadata
         """
         try:
-            tree = ET.parse(file_path)
-            return tree.getroot()
-        except ET.ParseError as e:
-            logger.error(f"Error parsing XML file {file_path}: {str(e)}")
-            return None
+            tree = ET.parse(xml_path)
+            root = tree.getroot()
+            
+            workflows = []
+            for workflow in root.findall('.//WORKFLOW'):
+                wf_data = {
+                    'workflow_name': workflow.get('NAME', ''),
+                    'workflow_type': workflow.get('WORKFLOWTYPE', ''),
+                    'version': workflow.get('VERSION', ''),
+                    'is_valid': workflow.get('ISVALID', ''),
+                    'description': workflow.get('DESCRIPTION', ''),
+                    'server_name': workflow.get('SERVERNAME', ''),
+                    'scheduler_info': workflow.get('SCHEDULERINFO', ''),
+                    'tasks': [],
+                    'source_file': xml_path,
+                    'file_hash': self._calculate_file_hash(xml_path)
+                }
+                
+                # Extract tasks
+                for task in workflow.findall('.//TASK'):
+                    task_data = {
+                        'task_name': task.get('NAME', ''),
+                        'task_type': task.get('TASKTYPE', ''),
+                        'reusable': task.get('REUSABLE', ''),
+                        'description': task.get('DESCRIPTION', '')
+                    }
+                    wf_data['tasks'].append(task_data)
+                
+                workflows.append(wf_data)
+            
+            return {'workflows': workflows, 'xml_path': xml_path}
+            
         except Exception as e:
-            logger.error(f"Unexpected error parsing {file_path}: {str(e)}")
-            return None
+            logger.error(f"Error parsing workflow XML {xml_path}: {str(e)}")
+            return {'workflows': [], 'xml_path': xml_path, 'error': str(e)}
     
-    def extract_workflow_metadata(self, root: ET.Element, file_path: str) -> List[Dict[str, Any]]:
+    def parse_mapping_xml(self, xml_path: str) -> Dict:
         """
-        Extract workflow metadata from XML.
+        Parse mapping XML and extract transformation logic.
         
         Args:
-            root: XML root element
-            file_path: Source file path
+            xml_path: Path to mapping XML file
             
         Returns:
-            List of workflow metadata dictionaries
+            Dictionary containing mapping metadata
         """
-        workflows = []
-        
-        for workflow in root.findall('.//WORKFLOW'):
-            wf_data = {
-                'workflow_name': workflow.get('NAME', ''),
-                'workflow_type': workflow.get('WORKFLOW_TYPE', 'STANDARD'),
-                'description': workflow.get('DESCRIPTION', ''),
-                'is_valid': workflow.get('ISVALID', 'YES'),
-                'version_number': workflow.get('VERSION_NUMBER', '1'),
-                'source_file': os.path.basename(file_path),
-                'file_path': file_path,
-                'tasks': [],
-                'dependencies': [],
-                'scheduler_info': {},
-                'extracted_timestamp': datetime.now().isoformat()
-            }
+        try:
+            tree = ET.parse(xml_path)
+            root = tree.getroot()
             
-            for task in workflow.findall('.//TASK'):
-                task_data = {
-                    'task_name': task.get('NAME', ''),
-                    'task_type': task.get('TYPE', ''),
-                    'reusable': task.get('REUSABLE', 'NO'),
-                    'description': task.get('DESCRIPTION', '')
-                }
-                wf_data['tasks'].append(task_data)
-            
-            for link in workflow.findall('.//TASKLINK'):
-                link_data = {
-                    'from_task': link.get('FROMTASK', ''),
-                    'to_task': link.get('TOTASK', ''),
-                    'condition': link.get('CONDITION', '')
-                }
-                wf_data['dependencies'].append(link_data)
-            
-            scheduler = workflow.find('.//SCHEDULER')
-            if scheduler is not None:
-                wf_data['scheduler_info'] = {
-                    'scheduler_type': scheduler.get('SCHEDULETYPE', ''),
-                    'start_time': scheduler.get('STARTTIME', ''),
-                    'end_time': scheduler.get('ENDTIME', ''),
-                    'repeat_interval': scheduler.get('REPEATINTERVAL', '')
-                }
-            
-            workflows.append(wf_data)
-        
-        return workflows
-    
-    def extract_mapping_metadata(self, root: ET.Element, file_path: str) -> List[Dict[str, Any]]:
-        """
-        Extract mapping metadata from XML.
-        
-        Args:
-            root: XML root element
-            file_path: Source file path
-            
-        Returns:
-            List of mapping metadata dictionaries
-        """
-        mappings = []
-        
-        for mapping in root.findall('.//MAPPING'):
-            mapping_data = {
-                'mapping_name': mapping.get('NAME', ''),
-                'mapping_type': mapping.get('MAPPINGTYPE', 'Standard'),
-                'description': mapping.get('DESCRIPTION', ''),
-                'is_valid': mapping.get('ISVALID', 'YES'),
-                'version_number': mapping.get('VERSION_NUMBER', '1'),
-                'source_file': os.path.basename(file_path),
-                'file_path': file_path,
-                'sources': [],
-                'targets': [],
-                'transformations': [],
-                'mapplets': [],
-                'extracted_timestamp': datetime.now().isoformat()
-            }
-            
-            for source in mapping.findall('.//SOURCE'):
-                source_data = {
-                    'source_name': source.get('NAME', ''),
-                    'source_type': source.get('SOURCETYPE', ''),
-                    'database_type': source.get('DATABASETYPE', ''),
-                    'owner_name': source.get('OWNERNAME', ''),
-                    'table_name': source.get('NAME', ''),
-                    'columns': []
+            mappings = []
+            for mapping in root.findall('.//MAPPING'):
+                map_data = {
+                    'mapping_name': mapping.get('NAME', ''),
+                    'mapping_type': mapping.get('MAPPINGTYPE', ''),
+                    'version': mapping.get('VERSION', ''),
+                    'is_valid': mapping.get('ISVALID', ''),
+                    'description': mapping.get('DESCRIPTION', ''),
+                    'sources': [],
+                    'targets': [],
+                    'transformations': [],
+                    'source_file': xml_path,
+                    'file_hash': self._calculate_file_hash(xml_path)
                 }
                 
-                for field in source.findall('.//SOURCEFIELD'):
-                    field_data = {
-                        'field_name': field.get('NAME', ''),
-                        'datatype': field.get('DATATYPE', ''),
-                        'precision': field.get('PRECISION', ''),
-                        'scale': field.get('SCALE', ''),
-                        'nullable': field.get('NULLABLE', '')
+                # Extract sources
+                for source in mapping.findall('.//SOURCE'):
+                    source_data = {
+                        'source_name': source.get('NAME', ''),
+                        'database_type': source.get('DATABASETYPE', ''),
+                        'dbdname': source.get('DBDNAME', ''),
+                        'owner_name': source.get('OWNERNAME', ''),
+                        'source_type': source.get('SOURCETYPE', ''),
+                        'columns': []
                     }
-                    source_data['columns'].append(field_data)
+                    
+                    # Extract source columns
+                    for field in source.findall('.//SOURCEFIELD'):
+                        column_data = {
+                            'name': field.get('NAME', ''),
+                            'datatype': field.get('DATATYPE', ''),
+                            'precision': field.get('PRECISION', ''),
+                            'scale': field.get('SCALE', ''),
+                            'nullable': field.get('NULLABLE', '')
+                        }
+                        source_data['columns'].append(column_data)
+                    
+                    map_data['sources'].append(source_data)
                 
-                mapping_data['sources'].append(source_data)
-            
-            for target in mapping.findall('.//TARGET'):
-                target_data = {
-                    'target_name': target.get('NAME', ''),
-                    'target_type': target.get('TARGETTYPE', ''),
-                    'database_type': target.get('DATABASETYPE', ''),
-                    'table_name': target.get('NAME', ''),
-                    'load_type': target.get('LOADTYPE', 'NORMAL'),
-                    'columns': []
-                }
-                
-                for field in target.findall('.//TARGETFIELD'):
-                    field_data = {
-                        'field_name': field.get('NAME', ''),
-                        'datatype': field.get('DATATYPE', ''),
-                        'precision': field.get('PRECISION', ''),
-                        'scale': field.get('SCALE', ''),
-                        'key_type': field.get('KEYTYPE', '')
+                # Extract targets
+                for target in mapping.findall('.//TARGET'):
+                    target_data = {
+                        'target_name': target.get('NAME', ''),
+                        'database_type': target.get('DATABASETYPE', ''),
+                        'table_name': target.get('TABLENAME', ''),
+                        'owner_name': target.get('OWNERNAME', ''),
+                        'target_type': target.get('TARGETTYPE', ''),
+                        'columns': []
                     }
-                    target_data['columns'].append(field_data)
+                    
+                    # Extract target columns
+                    for field in target.findall('.//TARGETFIELD'):
+                        column_data = {
+                            'name': field.get('NAME', ''),
+                            'datatype': field.get('DATATYPE', ''),
+                            'precision': field.get('PRECISION', ''),
+                            'scale': field.get('SCALE', ''),
+                            'nullable': field.get('NULLABLE', ''),
+                            'key_type': field.get('KEYTYPE', '')
+                        }
+                        target_data['columns'].append(column_data)
+                    
+                    map_data['targets'].append(target_data)
                 
-                mapping_data['targets'].append(target_data)
+                # Extract transformations
+                for transform_type in ['EXPRESSION', 'AGGREGATOR', 'JOINER', 'FILTER', 'LOOKUP', 
+                                       'ROUTER', 'SORTER', 'UNION', 'UPDATE_STRATEGY', 'NORMALIZER',
+                                       'RANK', 'SEQUENCE_GENERATOR', 'STORED_PROCEDURE']:
+                    for transform in mapping.findall(f'.//{transform_type}'):
+                        transform_data = {
+                            'transformation_name': transform.get('NAME', ''),
+                            'transformation_type': transform_type,
+                            'description': transform.get('DESCRIPTION', ''),
+                            'reusable': transform.get('REUSABLE', ''),
+                            'expressions': [],
+                            'ports': []
+                        }
+                        
+                        # Extract transformation expressions
+                        for expr in transform.findall('.//TRANSFORMFIELD'):
+                            expr_data = {
+                                'name': expr.get('NAME', ''),
+                                'datatype': expr.get('DATATYPE', ''),
+                                'precision': expr.get('PRECISION', ''),
+                                'expression': expr.get('EXPRESSION', ''),
+                                'port_type': expr.get('PORTTYPE', '')
+                            }
+                            transform_data['expressions'].append(expr_data)
+                        
+                        map_data['transformations'].append(transform_data)
+                
+                mappings.append(map_data)
             
-            for transform in mapping.findall('.//TRANSFORMATION'):
-                transform_data = self.extract_transformation_details(transform)
-                mapping_data['transformations'].append(transform_data)
+            return {'mappings': mappings, 'xml_path': xml_path}
             
-            mappings.append(mapping_data)
-        
-        return mappings
+        except Exception as e:
+            logger.error(f"Error parsing mapping XML {xml_path}: {str(e)}")
+            return {'mappings': [], 'xml_path': xml_path, 'error': str(e)}
     
-    def extract_transformation_details(self, transform: ET.Element) -> Dict[str, Any]:
+    def parse_session_xml(self, xml_path: str) -> Dict:
         """
-        Extract detailed transformation metadata.
+        Parse session XML and extract session configurations.
         
         Args:
-            transform: Transformation XML element
+            xml_path: Path to session XML file
             
         Returns:
-            Transformation metadata dictionary
+            Dictionary containing session metadata
         """
-        transform_data = {
-            'transformation_name': transform.get('NAME', ''),
-            'transformation_type': transform.get('TYPE', ''),
-            'description': transform.get('DESCRIPTION', ''),
-            'reusable': transform.get('REUSABLE', 'NO'),
-            'properties': {},
-            'ports': [],
-            'expressions': [],
-            'group_by_fields': [],
-            'join_conditions': [],
-            'filter_conditions': []
-        }
-        
-        transform_type = transform.get('TYPE', '')
-        
-        for prop in transform.findall('.//TABLEATTRIBUTE'):
-            prop_name = prop.get('NAME', '')
-            prop_value = prop.get('VALUE', '')
-            transform_data['properties'][prop_name] = prop_value
-        
-        for port in transform.findall('.//TRANSFORMFIELD'):
-            port_data = {
-                'port_name': port.get('NAME', ''),
-                'datatype': port.get('DATATYPE', ''),
-                'precision': port.get('PRECISION', ''),
-                'scale': port.get('SCALE', ''),
-                'port_type': port.get('PORTTYPE', ''),
-                'expression': port.get('EXPRESSION', ''),
-                'default_value': port.get('DEFAULTVALUE', '')
-            }
-            transform_data['ports'].append(port_data)
+        try:
+            tree = ET.parse(xml_path)
+            root = tree.getroot()
             
-            if port.get('EXPRESSION'):
-                transform_data['expressions'].append({
-                    'field': port.get('NAME', ''),
-                    'expression': port.get('EXPRESSION', '')
-                })
-        
-        if transform_type == 'Aggregator':
-            for port in transform.findall('.//TRANSFORMFIELD[@PORTTYPE="INPUT/OUTPUT"]'):
-                if port.get('GROUPBY') == 'YES':
-                    transform_data['group_by_fields'].append(port.get('NAME', ''))
-        
-        elif transform_type == 'Joiner':
-            join_condition = transform.find('.//TABLEATTRIBUTE[@NAME="Join Condition"]')
-            if join_condition is not None:
-                transform_data['join_conditions'].append(join_condition.get('VALUE', ''))
-            
-            join_type = transform.find('.//TABLEATTRIBUTE[@NAME="Join Type"]')
-            if join_type is not None:
-                transform_data['properties']['join_type'] = join_type.get('VALUE', '')
-        
-        elif transform_type == 'Filter':
-            filter_condition = transform.find('.//TABLEATTRIBUTE[@NAME="Filter Condition"]')
-            if filter_condition is not None:
-                transform_data['filter_conditions'].append(filter_condition.get('VALUE', ''))
-        
-        return transform_data
-    
-    def extract_session_metadata(self, root: ET.Element, file_path: str) -> List[Dict[str, Any]]:
-        """
-        Extract session metadata from XML.
-        
-        Args:
-            root: XML root element
-            file_path: Source file path
-            
-        Returns:
-            List of session metadata dictionaries
-        """
-        sessions = []
-        
-        for session in root.findall('.//SESSION'):
-            session_data = {
-                'session_name': session.get('NAME', ''),
-                'mapping_name': session.get('MAPPINGNAME', ''),
-                'description': session.get('DESCRIPTION', ''),
-                'is_valid': session.get('ISVALID', 'YES'),
-                'source_file': os.path.basename(file_path),
-                'file_path': file_path,
-                'config_properties': {},
-                'connection_info': {},
-                'session_properties': {},
-                'extracted_timestamp': datetime.now().isoformat()
-            }
-            
-            for config in session.findall('.//CONFIGREFERENCE'):
-                session_data['config_properties'][config.get('TYPE', '')] = {
-                    'ref_name': config.get('REFOBJECTNAME', ''),
-                    'type': config.get('TYPE', '')
+            sessions = []
+            for session in root.findall('.//SESSION'):
+                session_data = {
+                    'session_name': session.get('NAME', ''),
+                    'mapping_name': session.get('MAPPINGNAME', ''),
+                    'version': session.get('VERSION', ''),
+                    'is_valid': session.get('ISVALID', ''),
+                    'description': session.get('DESCRIPTION', ''),
+                    'reusable': session.get('REUSABLE', ''),
+                    'configurations': {},
+                    'source_file': xml_path,
+                    'file_hash': self._calculate_file_hash(xml_path)
                 }
-            
-            for attribute in session.findall('.//ATTRIBUTE'):
-                attr_name = attribute.get('NAME', '')
-                attr_value = attribute.get('VALUE', '')
-                session_data['session_properties'][attr_name] = attr_value
-            
-            for sesstransformationinst in session.findall('.//SESSTRANSFORMATIONINST'):
-                transform_name = sesstransformationinst.get('TRANSFORMATIONNAME', '')
-                partition_type = sesstransformationinst.get('PARTITIONTYPE', '')
                 
-                if transform_name:
-                    session_data['session_properties'][f'{transform_name}_partition'] = partition_type
-            
-            sessions.append(session_data)
-        
-        return sessions
-    
-    def extract_repository_structure(self, root: ET.Element, file_path: str) -> List[Dict[str, Any]]:
-        """
-        Extract repository folder structure.
-        
-        Args:
-            root: XML root element
-            file_path: Source file path
-            
-        Returns:
-            List of folder metadata dictionaries
-        """
-        folders = []
-        
-        for folder in root.findall('.//FOLDER'):
-            folder_data = {
-                'folder_name': folder.get('NAME', ''),
-                'description': folder.get('DESCRIPTION', ''),
-                'owner': folder.get('OWNER', ''),
-                'group': folder.get('GROUP', ''),
-                'permissions': folder.get('PERMISSIONS', ''),
-                'source_file': os.path.basename(file_path),
-                'file_path': file_path,
-                'extracted_timestamp': datetime.now().isoformat()
-            }
-            folders.append(folder_data)
-        
-        return folders
-    
-    def scan_directory_structure(self, root_path: str) -> List[Dict[str, Any]]:
-        """
-        Scan and document directory structure.
-        
-        Args:
-            root_path: Root directory path
-            
-        Returns:
-            List of directory metadata
-        """
-        directory_structure = []
-        
-        for root, dirs, files in os.walk(root_path):
-            for file in files:
-                file_path = os.path.join(root, file)
-                file_extension = os.path.splitext(file)[1].lower()
+                # Extract session configuration attributes
+                for config in session.findall('.//ATTRIBUTE'):
+                    attr_name = config.get('NAME', '')
+                    attr_value = config.get('VALUE', '')
+                    session_data['configurations'][attr_name] = attr_value
                 
-                file_info = {
-                    'file_name': file,
-                    'file_path': file_path,
-                    'relative_path': os.path.relpath(file_path, root_path),
-                    'file_extension': file_extension,
-                    'file_size': os.path.getsize(file_path),
-                    'file_type': self.determine_artifact_type(file_extension, file),
-                    'directory': os.path.dirname(file_path),
-                    'scanned_timestamp': datetime.now().isoformat()
-                }
-                directory_structure.append(file_info)
-        
-        return directory_structure
+                # Extract connection information
+                session_data['connections'] = []
+                for conn in session.findall('.//CONNECTION'):
+                    conn_data = {
+                        'name': conn.get('NAME', ''),
+                        'connection_type': conn.get('CONNECTIONTYPE', ''),
+                        'database_type': conn.get('DATABASETYPE', ''),
+                        'username': conn.get('USERNAME', ''),
+                        'connection_string': conn.get('CONNECTIONSTRING', '')
+                    }
+                    session_data['connections'].append(conn_data)
+                
+                sessions.append(session_data)
+            
+            return {'sessions': sessions, 'xml_path': xml_path}
+            
+        except Exception as e:
+            logger.error(f"Error parsing session XML {xml_path}: {str(e)}")
+            return {'sessions': [], 'xml_path': xml_path, 'error': str(e)}
     
-    def determine_artifact_type(self, extension: str, filename: str) -> str:
+    def _calculate_file_hash(self, file_path: str) -> str:
         """
-        Determine artifact type based on file extension and name.
+        Calculate MD5 hash of file for verification.
         
         Args:
-            extension: File extension
-            filename: File name
+            file_path: Path to file
             
         Returns:
-            Artifact type string
+            MD5 hash string
         """
-        filename_lower = filename.lower()
-        
-        if extension == '.xml':
-            if 'workflow' in filename_lower or filename_lower.startswith('wf_'):
-                return 'WORKFLOW'
-            elif 'mapping' in filename_lower or filename_lower.startswith('m_'):
-                return 'MAPPING'
-            elif 'session' in filename_lower or filename_lower.startswith('s_'):
-                return 'SESSION'
-            elif 'transformation' in filename_lower or filename_lower.startswith('t_'):
-                return 'TRANSFORMATION'
-            else:
-                return 'XML_EXPORT'
-        elif extension in ['.param', '.txt', '.properties']:
-            return 'PARAMETER_FILE'
-        elif extension == '.log':
-            return 'SESSION_LOG'
-        elif extension == '.json':
-            return 'METADATA_JSON'
-        else:
-            return 'OTHER'
+        try:
+            with open(file_path, 'rb') as f:
+                return hashlib.md5(f.read()).hexdigest()
+        except:
+            return ''
     
-    def process_all_artifacts(self):
+    def create_artifact_dataframes(self, xml_files: List[str]) -> Dict:
         """
-        Process all Informatica artifacts in the source directory.
-        """
-        logger.info(f"Starting artifact collection from {self.source_path}")
+        Parse all XML files and create DataFrames for each artifact type.
         
-        directory_structure = self.scan_directory_structure(self.source_path)
-        logger.info(f"Found {len(directory_structure)} files")
-        
-        xml_files = [f for f in directory_structure if f['file_extension'] == '.xml']
-        logger.info(f"Processing {len(xml_files)} XML files")
-        
-        for file_info in xml_files:
-            file_path = file_info['file_path']
-            logger.info(f"Processing: {file_path}")
+        Args:
+            xml_files: List of XML file paths
             
-            root = self.parse_xml_file(file_path)
-            if root is None:
+        Returns:
+            Dictionary of DataFrames by artifact type
+        """
+        logger.info("Parsing XML files and creating DataFrames")
+        
+        workflows_list = []
+        mappings_list = []
+        sessions_list = []
+        transformations_list = []
+        sources_list = []
+        targets_list = []
+        
+        for xml_file in xml_files:
+            try:
+                # Determine file type and parse accordingly
+                with open(xml_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read(1000)
+                    
+                if '<WORKFLOW' in content:
+                    wf_data = self.parse_workflow_xml(xml_file)
+                    workflows_list.extend(wf_data.get('workflows', []))
+                
+                if '<MAPPING' in content:
+                    map_data = self.parse_mapping_xml(xml_file)
+                    for mapping in map_data.get('mappings', []):
+                        mappings_list.append({
+                            'mapping_name': mapping['mapping_name'],
+                            'mapping_type': mapping['mapping_type'],
+                            'version': mapping['version'],
+                            'is_valid': mapping['is_valid'],
+                            'description': mapping['description'],
+                            'source_file': mapping['source_file'],
+                            'file_hash': mapping['file_hash'],
+                            'source_count': len(mapping['sources']),
+                            'target_count': len(mapping['targets']),
+                            'transformation_count': len(mapping['transformations'])
+                        })
+                        
+                        # Collect sources
+                        for source in mapping['sources']:
+                            source_entry = source.copy()
+                            source_entry['mapping_name'] = mapping['mapping_name']
+                            source_entry['column_count'] = len(source['columns'])
+                            source_entry['columns_json'] = json.dumps(source['columns'])
+                            sources_list.append(source_entry)
+                        
+                        # Collect targets
+                        for target in mapping['targets']:
+                            target_entry = target.copy()
+                            target_entry['mapping_name'] = mapping['mapping_name']
+                            target_entry['column_count'] = len(target['columns'])
+                            target_entry['columns_json'] = json.dumps(target['columns'])
+                            targets_list.append(target_entry)
+                        
+                        # Collect transformations
+                        for transform in mapping['transformations']:
+                            transform_entry = {
+                                'mapping_name': mapping['mapping_name'],
+                                'transformation_name': transform['transformation_name'],
+                                'transformation_type': transform['transformation_type'],
+                                'description': transform['description'],
+                                'reusable': transform['reusable'],
+                                'expression_count': len(transform['expressions']),
+                                'expressions_json': json.dumps(transform['expressions'])
+                            }
+                            transformations_list.append(transform_entry)
+                
+                if '<SESSION' in content:
+                    sess_data = self.parse_session_xml(xml_file)
+                    for session in sess_data.get('sessions', []):
+                        session_entry = {
+                            'session_name': session['session_name'],
+                            'mapping_name': session['mapping_name'],
+                            'version': session['version'],
+                            'is_valid': session['is_valid'],
+                            'description': session['description'],
+                            'reusable': session['reusable'],
+                            'source_file': session['source_file'],
+                            'file_hash': session['file_hash'],
+                            'configurations_json': json.dumps(session['configurations']),
+                            'connections_json': json.dumps(session['connections'])
+                        }
+                        sessions_list.append(session_entry)
+                        
+            except Exception as e:
+                logger.error(f"Error processing file {xml_file}: {str(e)}")
                 continue
-            
-            workflows = self.extract_workflow_metadata(root, file_path)
-            self.inventory_data['workflows'].extend(workflows)
-            
-            mappings = self.extract_mapping_metadata(root, file_path)
-            self.inventory_data['mappings'].extend(mappings)
-            
-            sessions = self.extract_session_metadata(root, file_path)
-            self.inventory_data['sessions'].extend(sessions)
-            
-            folders = self.extract_repository_structure(root, file_path)
-            self.inventory_data['repository_structure'].extend(folders)
-            
-            for mapping in mappings:
-                self.inventory_data['transformations'].extend(mapping['transformations'])
         
-        param_files = [f for f in directory_structure if f['file_type'] == 'PARAMETER_FILE']
-        self.inventory_data['parameter_files'] = param_files
+        # Create DataFrames
+        workflows_df = self.spark.createDataFrame(workflows_list) if workflows_list else None
+        mappings_df = self.spark.createDataFrame(mappings_list) if mappings_list else None
+        sessions_df = self.spark.createDataFrame(sessions_list) if sessions_list else None
+        transformations_df = self.spark.createDataFrame(transformations_list) if transformations_list else None
+        sources_df = self.spark.createDataFrame(sources_list) if sources_list else None
+        targets_df = self.spark.createDataFrame(targets_list) if targets_list else None
         
-        logger.info("Artifact collection completed")
-    
-    def create_inventory_dataframes(self) -> Dict[str, DataFrame]:
-        """
-        Create Spark DataFrames from collected inventory data.
-        
-        Returns:
-            Dictionary of DataFrames for each artifact type
-        """
-        dataframes = {}
-        
-        if self.inventory_data['workflows']:
-            workflows_df = self.spark.createDataFrame(
-                [self.flatten_workflow(wf) for wf in self.inventory_data['workflows']]
-            )
-            dataframes['workflows'] = workflows_df
-        
-        if self.inventory_data['mappings']:
-            mappings_df = self.spark.createDataFrame(
-                [self.flatten_mapping(m) for m in self.inventory_data['mappings']]
-            )
-            dataframes['mappings'] = mappings_df
-        
-        if self.inventory_data['sessions']:
-            sessions_df = self.spark.createDataFrame(self.inventory_data['sessions'])
-            dataframes['sessions'] = sessions_df
-        
-        if self.inventory_data['transformations']:
-            transformations_df = self.spark.createDataFrame(
-                [self.flatten_transformation(t) for t in self.inventory_data['transformations']]
-            )
-            dataframes['transformations'] = transformations_df
-        
-        if self.inventory_data['parameter_files']:
-            param_files_df = self.spark.createDataFrame(self.inventory_data['parameter_files'])
-            dataframes['parameter_files'] = param_files_df
-        
-        if self.inventory_data['repository_structure']:
-            repo_structure_df = self.spark.createDataFrame(self.inventory_data['repository_structure'])
-            dataframes['repository_structure'] = repo_structure_df
-        
-        return dataframes
-    
-    def flatten_workflow(self, workflow: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Flatten workflow dictionary for DataFrame creation.
-        
-        Args:
-            workflow: Workflow metadata dictionary
-            
-        Returns:
-            Flattened dictionary
-        """
         return {
-            'workflow_name': workflow['workflow_name'],
-            'workflow_type': workflow['workflow_type'],
-            'description': workflow['description'],
-            'is_valid': workflow['is_valid'],
-            'version_number': workflow['version_number'],
-            'source_file': workflow['source_file'],
-            'file_path': workflow['file_path'],
-            'task_count': len(workflow['tasks']),
-            'dependency_count': len(workflow['dependencies']),
-            'has_scheduler': bool(workflow['scheduler_info']),
-            'tasks_json': json.dumps(workflow['tasks']),
-            'dependencies_json': json.dumps(workflow['dependencies']),
-            'scheduler_json': json.dumps(workflow['scheduler_info']),
-            'extracted_timestamp': workflow['extracted_timestamp']
+            'workflows': workflows_df,
+            'mappings': mappings_df,
+            'sessions': sessions_df,
+            'transformations': transformations_df,
+            'sources': sources_df,
+            'targets': targets_df
         }
     
-    def flatten_mapping(self, mapping: Dict[str, Any]) -> Dict[str, Any]:
+    def create_inventory_summary(self, artifact_dfs: Dict) -> None:
         """
-        Flatten mapping dictionary for DataFrame creation.
+        Create comprehensive inventory summary with counts and descriptions.
         
         Args:
-            mapping: Mapping metadata dictionary
-            
-        Returns:
-            Flattened dictionary
+            artifact_dfs: Dictionary of artifact DataFrames
         """
-        return {
-            'mapping_name': mapping['mapping_name'],
-            'mapping_type': mapping['mapping_type'],
-            'description': mapping['description'],
-            'is_valid': mapping['is_valid'],
-            'version_number': mapping['version_number'],
-            'source_file': mapping['source_file'],
-            'file_path': mapping['file_path'],
-            'source_count': len(mapping['sources']),
-            'target_count': len(mapping['targets']),
-            'transformation_count': len(mapping['transformations']),
-            'sources_json': json.dumps(mapping['sources']),
-            'targets_json': json.dumps(mapping['targets']),
-            'transformations_json': json.dumps(mapping['transformations']),
-            'extracted_timestamp': mapping['extracted_timestamp']
-        }
-    
-    def flatten_transformation(self, transformation: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Flatten transformation dictionary for DataFrame creation.
+        logger.info("Creating inventory summary")
         
-        Args:
-            transformation: Transformation metadata dictionary
-            
-        Returns:
-            Flattened dictionary
-        """
-        return {
-            'transformation_name': transformation['transformation_name'],
-            'transformation_type': transformation['transformation_type'],
-            'description': transformation['description'],
-            'reusable': transformation['reusable'],
-            'port_count': len(transformation['ports']),
-            'expression_count': len(transformation['expressions']),
-            'properties_json': json.dumps(transformation['properties']),
-            'ports_json': json.dumps(transformation['ports']),
-            'expressions_json': json.dumps(transformation['expressions']),
-            'group_by_fields_json': json.dumps(transformation['group_by_fields']),
-            'join_conditions_json': json.dumps(transformation['join_conditions']),
-            'filter_conditions_json': json.dumps(transformation['filter_conditions'])
-        }
-    
-    def generate_summary_report(self, dataframes: Dict[str, DataFrame]) -> DataFrame:
-        """
-        Generate summary statistics report.
-        
-        Args:
-            dataframes: Dictionary of artifact DataFrames
-            
-        Returns:
-            Summary DataFrame
-        """
         summary_data = []
         
-        for artifact_type, df in dataframes.items():
-            record_count = df.count()
-            
-            summary_data.append({
-                'artifact_type': artifact_type,
-                'total_count': record_count,
-                'report_timestamp': datetime.now().isoformat()
-            })
+        for artifact_type, df in artifact_dfs.items():
+            if df is not None:
+                count = df.count()
+                
+                summary_entry = {
+                    'artifact_type': artifact_type,
+                    'total_count': count,
+                    'collection_timestamp': self.collection_timestamp,
+                    'source_path': self.base_path
+                }
+                
+                # Add type-specific metrics
+                if artifact_type == 'workflows':
+                    summary_entry['unique_workflows'] = df.select('workflow_name').distinct().count()
+                    summary_entry['task_count'] = df.selectExpr('size(tasks)').agg({'size(tasks)': 'sum'}).collect()[0][0] or 0
+                
+                elif artifact_type == 'mappings':
+                    summary_entry['unique_mappings'] = df.select('mapping_name').distinct().count()
+                    summary_entry['total_sources'] = df.agg({'source_count': 'sum'}).collect()[0][0] or 0
+                    summary_entry['total_targets'] = df.agg({'target_count': 'sum'}).collect()[0][0] or 0
+                    summary_entry['total_transformations'] = df.agg({'transformation_count': 'sum'}).collect()[0][0] or 0
+                
+                elif artifact_type == 'sessions':
+                    summary_entry['unique_sessions'] = df.select('session_name').distinct().count()
+                    summary_entry['reusable_count'] = df.filter(col('reusable') == 'YES').count()
+                
+                elif artifact_type == 'transformations':
+                    summary_entry['unique_transformations'] = df.select('transformation_name').distinct().count()
+                    # Count by transformation type
+                    type_counts = df.groupBy('transformation_type').count().collect()
+                    summary_entry['transformation_types'] = {row['transformation_type']: row['count'] for row in type_counts}
+                
+                elif artifact_type == 'sources':
+                    summary_entry['unique_sources'] = df.select('source_name').distinct().count()
+                    summary_entry['total_columns'] = df.agg({'column_count': 'sum'}).collect()[0][0] or 0
+                
+                elif artifact_type == 'targets':
+                    summary_entry['unique_targets'] = df.select('target_name').distinct().count()
+                    summary_entry['total_columns'] = df.agg({'column_count': 'sum'}).collect()[0][0] or 0
+                
+                summary_data.append(summary_entry)
         
+        # Create summary DataFrame
         summary_df = self.spark.createDataFrame(summary_data)
-        return summary_df
+        
+        # Write summary to output
+        summary_output = f"{self.output_path}/inventory_summary"
+        summary_df.coalesce(1).write.mode('overwrite').json(summary_output)
+        logger.info(f"Inventory summary written to {summary_output}")
+        
+        # Also create human-readable CSV
+        summary_csv = f"{self.output_path}/inventory_summary.csv"
+        summary_df.coalesce(1).write.mode('overwrite').option('header', 'true').csv(summary_csv)
+        logger.info(f"Inventory summary CSV written to {summary_csv}")
     
-    def generate_source_to_target_mapping(self, dataframes: Dict[str, DataFrame]) -> DataFrame:
+    def create_repository_structure(self, xml_files: List[str]) -> None:
         """
-        Generate source-to-target mapping report.
+        Document repository folder structure and organization.
         
         Args:
-            dataframes: Dictionary of artifact DataFrames
-            
-        Returns:
-            Source-to-target mapping DataFrame
+            xml_files: List of XML file paths
         """
-        if 'mappings' not in dataframes:
-            logger.warning("No mappings found for source-to-target analysis")
-            return None
+        logger.info("Creating repository structure documentation")
         
-        mappings_df = dataframes['mappings']
+        structure_data = []
         
-        from pyspark.sql.functions import explode, from_json
-        from pyspark.sql.types import ArrayType, StructType, StructField, StringType
+        for xml_file in xml_files:
+            path_parts = xml_file.replace(self.base_path, '').split('/')
+            
+            structure_entry = {
+                'full_path': xml_file,
+                'relative_path': xml_file.replace(self.base_path, ''),
+                'folder_depth': len(path_parts) - 1,
+                'folder_name': path_parts[-2] if len(path_parts) > 1 else 'root',
+                'file_name': path_parts[-1],
+                'file_size_bytes': os.path.getsize(xml_file) if os.path.exists(xml_file) else 0,
+                'collection_timestamp': self.collection_timestamp
+            }
+            
+            structure_data.append(structure_entry)
         
-        source_schema = ArrayType(StructType([
-            StructField("source_name", StringType(), True),
-            StructField("source_type", StringType(), True),
-            StructField("database_type", StringType(), True),
-            StructField("table_name", StringType(), True)
-        ]))
+        structure_df = self.spark.createDataFrame(structure_data)
         
-        target_schema = ArrayType(StructType([
-            StructField("target_name", StringType(), True),
-            StructField("target_type", StringType(), True),
-            StructField("database_type", StringType(), True),
-            StructField("table_name", StringType(), True)
-        ]))
+        # Write structure to output
+        structure_output = f"{self.output_path}/repository_structure"
+        structure_df.write.mode('overwrite').parquet(structure_output)
+        logger.info(f"Repository structure written to {structure_output}")
         
-        mappings_with_sources = mappings_df.withColumn(
-            "sources_parsed", from_json(col("sources_json"), source_schema)
-        ).withColumn(
-            "targets_parsed", from_json(col("targets_json"), target_schema)
+        # Create folder hierarchy summary
+        folder_summary = structure_df.groupBy('folder_name').agg(
+            count('*').alias('file_count'),
+            sum('file_size_bytes').alias('total_size_bytes')
         )
         
-        source_target_df = mappings_with_sources.select(
-            col("mapping_name"),
-            col("mapping_type"),
-            explode(col("sources_parsed")).alias("source"),
-            explode(col("targets_parsed")).alias("target")
-        ).select(
-            col("mapping_name"),
-            col("mapping_type"),
-            col("source.source_name").alias("source_name"),
-            col("source.table_name").alias("source_table"),
-            col("source.database_type").alias("source_db_type"),
-            col("target.target_name").alias("target_name"),
-            col("target.table_name").alias("target_table"),
-            col("target.database_type").alias("target_db_type")
-        ).withColumn("created_timestamp", current_timestamp())
-        
-        return source_target_df
+        folder_summary_output = f"{self.output_path}/folder_hierarchy_summary"
+        folder_summary.coalesce(1).write.mode('overwrite').option('header', 'true').csv(folder_summary_output)
+        logger.info(f"Folder hierarchy summary written to {folder_summary_output}")
     
-    def generate_transformation_report(self, dataframes: Dict[str, DataFrame]) -> DataFrame:
+    def create_source_to_target_mappings(self, artifact_dfs: Dict) -> None:
         """
-        Generate transformation analysis report.
+        Create comprehensive source-to-target mapping documentation.
         
         Args:
-            dataframes: Dictionary of artifact DataFrames
+            artifact_dfs: Dictionary of artifact DataFrames
+        """
+        logger.info("Creating source-to-target mapping documentation")
+        
+        if artifact_dfs.get('mappings') and artifact_dfs.get('sources') and artifact_dfs.get('targets'):
+            # Join mappings with sources and targets
+            s2t_mapping = artifact_dfs['sources'].alias('src') \
+                .join(
+                    artifact_dfs['targets'].alias('tgt'),
+                    col('src.mapping_name') == col('tgt.mapping_name'),
+                    'inner'
+                ) \
+                .select(
+                    col('src.mapping_name').alias('mapping_name'),
+                    col('src.source_name').alias('source_name'),
+                    col('src.database_type').alias('source_database_type'),
+                    col('src.dbdname').alias('source_dbdname'),
+                    col('src.source_type').alias('source_type'),
+                    col('src.column_count').alias('source_column_count'),
+                    col('tgt.target_name').alias('target_name'),
+                    col('tgt.database_type').alias('target_database_type'),
+                    col('tgt.table_name').alias('target_table_name'),
+                    col('tgt.target_type').alias('target_type'),
+                    col('tgt.column_count').alias('target_column_count'),
+                    lit(self.collection_timestamp).alias('collection_timestamp')
+                )
             
-        Returns:
-            Transformation analysis DataFrame
-        """
-        if 'transformations' not in dataframes:
-            logger.warning("No transformations found for analysis")
-            return None
-        
-        transformations_df = dataframes['transformations']
-        
-        transformation_summary = transformations_df.groupBy("transformation_type").agg(
-            count("*").alias("count"),
-            countDistinct("transformation_name").alias("unique_transformations")
-        ).withColumn("analysis_timestamp", current_timestamp())
-        
-        return transformation_summary
+            # Write source-to-target mappings
+            s2t_output = f"{self.output_path}/source_to_target_mappings"
+            s2t_mapping.write.mode('overwrite').parquet(s2t_output)
+            logger.info(f"Source-to-target mappings written to {s2t_output}")
+            
+            # Create CSV version for easy viewing
+            s2t_csv = f"{self.output_path}/source_to_target_mappings.csv"
+            s2t_mapping.coalesce(1).write.mode('overwrite').option('header', 'true').csv(s2t_csv)
+            logger.info(f"Source-to-target mappings CSV written to {s2t_csv}")
     
-    def save_inventory_to_storage(self, dataframes: Dict[str, DataFrame]):
+    def save_artifacts(self, artifact_dfs: Dict) -> None:
         """
-        Save all inventory DataFrames to storage.
+        Save all artifact DataFrames to output location.
         
         Args:
-            dataframes: Dictionary of artifact DataFrames
+            artifact_dfs: Dictionary of artifact DataFrames
         """
-        logger.info(f"Saving inventory data to {self.output_path}")
+        logger.info("Saving artifact DataFrames")
         
-        for artifact_type, df in dataframes.items():
-            output_location = f"{self.output_path}/inventory/{artifact_type}"
-            
-            df.coalesce(1).write.mode("overwrite").parquet(output_location)
-            logger.info(f"Saved {artifact_type} to {output_location}")
-            
-            csv_location = f"{self.output_path}/inventory_csv/{artifact_type}"
-            df.coalesce(1).write.mode("overwrite").option("header", "true").csv(csv_location)
-            logger.info(f"Saved {artifact_type} CSV to {csv_location}")
-        
-        summary_df = self.generate_summary_report(dataframes)
-        summary_location = f"{self.output_path}/summary/inventory_summary"
-        summary_df.write.mode("overwrite").parquet(summary_location)
-        summary_df.coalesce(1).write.mode("overwrite").option("header", "true").csv(
-            f"{self.output_path}/summary_csv/inventory_summary"
-        )
-        
-        source_target_df = self.generate_source_to_target_mapping(dataframes)
-        if source_target_df:
-            st_location = f"{self.output_path}/analysis/source_to_target_mapping"
-            source_target_df.write.mode("overwrite").parquet(st_location)
-            source_target_df.coalesce(1).write.mode("overwrite").option("header", "true").csv(
-                f"{self.output_path}/analysis_csv/source_to_target_mapping"
-            )
-        
-        transformation_report = self.generate_transformation_report(dataframes)
-        if transformation_report:
-            trans_location = f"{self.output_path}/analysis/transformation_summary"
-            transformation_report.write.mode("overwrite").parquet(trans_location)
-            transformation_report.coalesce(1).write.mode("overwrite").option("header", "true").csv(
-                f"{self.output_path}/analysis_csv/transformation_summary"
-            )
-        
-        metadata_output = f"{self.output_path}/metadata/inventory_metadata.json"
-        os.makedirs(os.path.dirname(metadata_output), exist_ok=True)
-        with open(metadata_output, 'w') as f:
-            json.dump(self.inventory_data, f, indent=2)
-        logger.info(f"Saved metadata JSON to {metadata_output}")
+        for artifact_type, df in artifact_dfs.items():
+            if df is not None:
+                output_path = f"{self.output_path}/artifacts/{artifact_type}"
+                df.write.mode('overwrite').parquet(output_path)
+                logger.info(f"Saved {artifact_type} to {output_path}")
+                
+                # Also save as CSV for easy viewing
+                csv_path = f"{self.output_path}/artifacts_csv/{artifact_type}.csv"
+                df.coalesce(1).write.mode('overwrite').option('header', 'true').csv(csv_path)
+                logger.info(f"Saved {artifact_type} CSV to {csv_path}")
     
-    def execute_collection(self):
+    def run_collection(self) -> None:
         """
-        Execute complete artifact collection and cataloging process.
+        Execute the complete collection and cataloging process.
         """
+        logger.info("Starting Informatica PowerCenter artifact collection")
+        
         try:
-            logger.info("Starting Informatica artifact collection process")
+            # Step 1: Collect all XML files
+            xml_files = self.collect_xml_files()
             
-            self.process_all_artifacts()
+            if not xml_files:
+                logger.warning("No XML files found. Exiting.")
+                return
             
-            dataframes = self.create_inventory_dataframes()
+            # Step 2: Parse XML files and create DataFrames
+            artifact_dfs = self.create_artifact_dataframes(xml_files)
             
-            self.save_inventory_to_storage(dataframes)
+            # Step 3: Save artifacts
+            self.save_artifacts(artifact_dfs)
             
-            logger.info("Informatica artifact collection completed successfully")
+            # Step 4: Create inventory summary
+            self.create_inventory_summary(artifact_dfs)
             
-            return dataframes
+            # Step 5: Document repository structure
+            self.create_repository_structure(xml_files)
+            
+            # Step 6: Create source-to-target mappings
+            self.create_source_to_target_mappings(artifact_dfs)
+            
+            logger.info("Informatica PowerCenter artifact collection completed successfully")
             
         except Exception as e:
-            logger.error(f"Error during artifact collection: {str(e)}")
+            logger.error(f"Error during collection process: {str(e)}")
             raise
 
 
-def main():
-    """
-    Main execution function for Informatica artifact collection.
-    """
+# Main execution
+if __name__ == "__main__":
+    # Initialize Spark session
     spark = SparkSession.builder \
-        .appName("InformaticaArtifactCollector") \
+        .appName("InformaticaPowerCenterCollector") \
         .config("spark.sql.adaptive.enabled", "true") \
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
+        .config("spark.sql.files.maxPartitionBytes", "134217728") \
+        .config("spark.sql.shuffle.partitions", "200") \
         .getOrCreate()
     
-    source_path = "/path/to/informatica/exports"
-    output_path = "/path/to/output/inventory"
+    # Set log level
+    spark.sparkContext.setLogLevel("WARN")
     
-    collector = InformaticaArtifactCollector(
+    # Configuration parameters
+    BASE_PATH = "/path/to/informatica/exports"
+    OUTPUT_PATH = "/path/to/migration/catalog"
+    
+    # Initialize collector
+    collector = InformaticaPowerCenterCollector(
         spark=spark,
-        source_path=source_path,
-        output_path=output_path
+        base_path=BASE_PATH,
+        output_path=OUTPUT_PATH
     )
     
-    dataframes = collector.execute_collection()
+    # Run collection process
+    collector.run_collection()
     
-    for artifact_type, df in dataframes.items():
-        print(f"\n{artifact_type.upper()} Summary:")
-        df.show(10, truncate=False)
-    
+    # Stop Spark session
     spark.stop()
-
-
-if __name__ == "__main__":
-    main()
