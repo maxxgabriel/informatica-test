@@ -1,14 +1,16 @@
 import xml.etree.ElementTree as ET
-from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql import functions as F
-from pyspark.sql.window import Window
-from typing import Dict, List, Tuple, Any, Optional
 import json
 import re
 from pathlib import Path
-from datetime import datetime
+from typing import Dict, List, Any, Tuple, Set
+from dataclasses import dataclass, asdict, field
 from collections import defaultdict, Counter
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+from pyspark.sql.types import *
 import logging
+from datetime import datetime
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,701 +19,796 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class ExpressionTransformation:
+    """Represents an Expression transformation with its formulas"""
+    name: str
+    description: str
+    ports: List[Dict[str, Any]]
+    expressions: List[Dict[str, str]]
+    pyspark_equivalent: str = ""
+    complexity_score: int = 0
+    categories: List[str] = field(default_factory=list)
+
+
+@dataclass
+class AggregatorTransformation:
+    """Represents an Aggregator transformation with grouping logic"""
+    name: str
+    description: str
+    group_by_ports: List[str]
+    aggregate_expressions: List[Dict[str, str]]
+    sorted_input: bool
+    pyspark_equivalent: str = ""
+    aggregate_functions: List[str] = field(default_factory=list)
+
+
+@dataclass
+class JoinerTransformation:
+    """Represents a Joiner transformation with join conditions"""
+    name: str
+    description: str
+    master_source: str
+    detail_source: str
+    join_type: str
+    join_condition: str
+    sorted: bool
+    cache_size: str
+    pyspark_equivalent: str = ""
+
+
+@dataclass
+class FilterTransformation:
+    """Represents a Filter transformation with conditions"""
+    name: str
+    description: str
+    filter_condition: str
+    ports: List[Dict[str, Any]]
+    pyspark_equivalent: str = ""
+    condition_complexity: int = 0
+
+
+@dataclass
+class LookupTransformation:
+    """Represents a Lookup transformation with caching strategy"""
+    name: str
+    description: str
+    lookup_table: str
+    lookup_condition: str
+    return_ports: List[str]
+    cache_type: str
+    cache_size: str
+    lookup_sql: str
+    pyspark_equivalent: str = ""
+    cache_strategy: str = ""
+
+
+@dataclass
+class RouterTransformation:
+    """Represents a Router transformation with routing groups"""
+    name: str
+    description: str
+    routing_groups: List[Dict[str, str]]
+    default_group: bool
+    pyspark_equivalent: str = ""
+
+
+@dataclass
+class SorterTransformation:
+    """Represents a Sorter transformation"""
+    name: str
+    description: str
+    sort_keys: List[Dict[str, str]]
+    distinct: bool
+    case_sensitive: bool
+    pyspark_equivalent: str = ""
+
+
+@dataclass
+class UnionTransformation:
+    """Represents a Union transformation"""
+    name: str
+    description: str
+    input_groups: List[str]
+    ports: List[Dict[str, Any]]
+    pyspark_equivalent: str = ""
+
+
+@dataclass
+class CustomTransformation:
+    """Represents a Custom transformation with code"""
+    name: str
+    description: str
+    transformation_type: str
+    custom_code: str
+    language: str
+    complexity_assessment: str = ""
+    pyspark_equivalent: str = ""
+
+
+class InformaticaExpressionParser:
+    """Parser for Informatica expression syntax"""
+    
+    FUNCTION_MAPPING = {
+        'TO_DATE': 'F.to_date',
+        'TO_CHAR': 'F.date_format',
+        'TO_NUMBER': 'F.col().cast("double")',
+        'SUBSTR': 'F.substring',
+        'INSTR': 'F.instr',
+        'LENGTH': 'F.length',
+        'LTRIM': 'F.ltrim',
+        'RTRIM': 'F.rtrim',
+        'TRIM': 'F.trim',
+        'UPPER': 'F.upper',
+        'LOWER': 'F.lower',
+        'CONCAT': 'F.concat',
+        'NVL': 'F.coalesce',
+        'IIF': 'F.when().otherwise()',
+        'DECODE': 'F.when().when().otherwise()',
+        'ADD_TO_DATE': 'F.date_add / F.date_sub',
+        'SYSDATE': 'F.current_date()',
+        'SYSTIMESTAMP': 'F.current_timestamp()',
+        'ROUND': 'F.round',
+        'TRUNC': 'F.trunc',
+        'ABS': 'F.abs',
+        'CEIL': 'F.ceil',
+        'FLOOR': 'F.floor',
+        'MOD': 'F.col() % value',
+        'POWER': 'F.pow',
+        'SQRT': 'F.sqrt',
+        'SUM': 'F.sum',
+        'AVG': 'F.avg',
+        'COUNT': 'F.count',
+        'MAX': 'F.max',
+        'MIN': 'F.min',
+        'FIRST': 'F.first',
+        'LAST': 'F.last',
+        'ISNULL': 'F.col().isNull()',
+        'IS_DATE': 'F.col().cast("date").isNotNull()',
+        'IS_NUMBER': 'F.col().cast("double").isNotNull()',
+        'REG_EXTRACT': 'F.regexp_extract',
+        'REG_REPLACE': 'F.regexp_replace',
+        'REG_MATCH': 'F.rlike'
+    }
+    
+    @staticmethod
+    def categorize_expression(expression: str) -> List[str]:
+        """Categorize expression by type"""
+        categories = []
+        expr_upper = expression.upper()
+        
+        if any(func in expr_upper for func in ['TO_DATE', 'TO_CHAR', 'ADD_TO_DATE', 'SYSDATE']):
+            categories.append('DATE_OPERATIONS')
+        if any(func in expr_upper for func in ['SUBSTR', 'INSTR', 'LENGTH', 'TRIM', 'CONCAT']):
+            categories.append('STRING_OPERATIONS')
+        if any(func in expr_upper for func in ['TO_NUMBER', 'ROUND', 'TRUNC', 'ABS', 'MOD']):
+            categories.append('NUMERIC_OPERATIONS')
+        if any(func in expr_upper for func in ['IIF', 'DECODE']):
+            categories.append('CONDITIONAL_LOGIC')
+        if any(func in expr_upper for func in ['NVL', 'ISNULL']):
+            categories.append('NULL_HANDLING')
+        if any(func in expr_upper for func in ['REG_EXTRACT', 'REG_REPLACE', 'REG_MATCH']):
+            categories.append('REGEX_OPERATIONS')
+        if any(func in expr_upper for func in ['SUM', 'AVG', 'COUNT', 'MAX', 'MIN']):
+            categories.append('AGGREGATION')
+        
+        return categories if categories else ['GENERAL']
+    
+    @staticmethod
+    def calculate_complexity(expression: str) -> int:
+        """Calculate complexity score for expression"""
+        score = 0
+        expr_upper = expression.upper()
+        
+        # Nested function calls
+        score += expr_upper.count('(') * 2
+        
+        # Conditional logic
+        score += expr_upper.count('IIF') * 5
+        score += expr_upper.count('DECODE') * 7
+        
+        # String operations
+        score += len(re.findall(r'SUBSTR|INSTR|CONCAT', expr_upper)) * 2
+        
+        # Date operations
+        score += len(re.findall(r'TO_DATE|ADD_TO_DATE', expr_upper)) * 3
+        
+        # Regex operations
+        score += len(re.findall(r'REG_\w+', expr_upper)) * 4
+        
+        # Aggregations
+        score += len(re.findall(r'SUM|AVG|COUNT|MAX|MIN', expr_upper)) * 3
+        
+        return score
+    
+    @staticmethod
+    def convert_to_pyspark(expression: str, port_name: str) -> str:
+        """Convert Informatica expression to PySpark equivalent"""
+        pyspark_expr = expression
+        
+        # Handle IIF conversion
+        iif_pattern = r'IIF\s*\((.*?),(.*?),(.*?)\)'
+        pyspark_expr = re.sub(
+            iif_pattern,
+            r'F.when(\1, \2).otherwise(\3)',
+            pyspark_expr,
+            flags=re.IGNORECASE
+        )
+        
+        # Handle NVL conversion
+        nvl_pattern = r'NVL\s*\((.*?),(.*?)\)'
+        pyspark_expr = re.sub(
+            nvl_pattern,
+            r'F.coalesce(\1, \2)',
+            pyspark_expr,
+            flags=re.IGNORECASE
+        )
+        
+        # Handle DECODE conversion
+        decode_pattern = r'DECODE\s*\((.*?)\)'
+        if re.search(decode_pattern, pyspark_expr, re.IGNORECASE):
+            pyspark_expr = "# Complex DECODE - requires manual conversion to nested F.when().when().otherwise()"
+        
+        # Handle date functions
+        pyspark_expr = re.sub(
+            r'TO_DATE\s*\((.*?),\s*[\'"]?(.*?)[\'"]?\)',
+            r'F.to_date(\1, "\2")',
+            pyspark_expr,
+            flags=re.IGNORECASE
+        )
+        
+        # Handle string functions
+        pyspark_expr = re.sub(r'SUBSTR\s*\(', r'F.substring(', pyspark_expr, flags=re.IGNORECASE)
+        pyspark_expr = re.sub(r'LENGTH\s*\(', r'F.length(', pyspark_expr, flags=re.IGNORECASE)
+        pyspark_expr = re.sub(r'UPPER\s*\(', r'F.upper(', pyspark_expr, flags=re.IGNORECASE)
+        pyspark_expr = re.sub(r'LOWER\s*\(', r'F.lower(', pyspark_expr, flags=re.IGNORECASE)
+        pyspark_expr = re.sub(r'TRIM\s*\(', r'F.trim(', pyspark_expr, flags=re.IGNORECASE)
+        
+        # Wrap in withColumn statement
+        return f'df.withColumn("{port_name}", {pyspark_expr})'
+
+
 class InformaticaTransformationAnalyzer:
-    """
-    Comprehensive analyzer for Informatica transformations with PySpark code generation.
-    Parses mapping XML files and extracts all transformation logic with PySpark equivalents.
-    """
+    """Analyzes Informatica transformations and generates PySpark equivalents"""
     
-    def __init__(self, xml_path: str, output_dir: str = "./transformation_analysis"):
-        """
-        Initialize the transformation analyzer.
+    def __init__(self, xml_directory: str, output_directory: str):
+        self.xml_directory = Path(xml_directory)
+        self.output_directory = Path(output_directory)
+        self.output_directory.mkdir(parents=True, exist_ok=True)
         
-        Args:
-            xml_path: Path to Informatica mapping XML file or directory
-            output_dir: Directory for output analysis files
-        """
-        self.xml_path = Path(xml_path)
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.expression_parser = InformaticaExpressionParser()
         
-        self.transformation_catalog = defaultdict(list)
-        self.expression_formulas = []
-        self.aggregator_logic = []
-        self.joiner_conditions = []
-        self.filter_conditions = []
-        self.lookup_transformations = []
-        self.custom_transformations = []
-        self.sorter_logic = []
-        self.router_logic = []
-        self.union_logic = []
+        self.transformations = {
+            'expression': [],
+            'aggregator': [],
+            'joiner': [],
+            'filter': [],
+            'lookup': [],
+            'router': [],
+            'sorter': [],
+            'union': [],
+            'custom': []
+        }
+        
+        self.transformation_counts = Counter()
         self.transformation_patterns = defaultdict(list)
-        
-        self.spark = SparkSession.builder \
-            .appName("InformaticaTransformationAnalyzer") \
-            .config("spark.sql.adaptive.enabled", "true") \
-            .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
-            .getOrCreate()
+        self.business_logic_catalog = []
     
-    def parse_xml_files(self) -> None:
-        """Parse all XML mapping files in the specified path."""
-        xml_files = []
+    def analyze_all_mappings(self):
+        """Analyze all mapping XML files in directory"""
+        logger.info(f"Starting analysis of mappings in {self.xml_directory}")
         
-        if self.xml_path.is_file():
-            xml_files = [self.xml_path]
-        elif self.xml_path.is_dir():
-            xml_files = list(self.xml_path.glob("**/*.xml"))
-        
+        xml_files = list(self.xml_directory.glob("*.xml"))
         logger.info(f"Found {len(xml_files)} XML files to process")
         
         for xml_file in xml_files:
             try:
-                logger.info(f"Processing: {xml_file}")
+                logger.info(f"Processing {xml_file.name}")
                 self._parse_mapping_xml(xml_file)
             except Exception as e:
-                logger.error(f"Error processing {xml_file}: {str(e)}")
+                logger.error(f"Error processing {xml_file.name}: {str(e)}")
+        
+        self._generate_reports()
+        self._identify_patterns()
+        self._export_pyspark_templates()
     
-    def _parse_mapping_xml(self, xml_file: Path) -> None:
-        """Parse individual mapping XML file and extract transformations."""
-        tree = ET.parse(xml_file)
-        root = tree.getroot()
-        
-        mapping_name = xml_file.stem
-        
-        # Extract all transformation types
-        transformations = root.findall(".//TRANSFORMATION")
-        
-        for trans in transformations:
-            trans_type = trans.get("TYPE", "UNKNOWN")
-            trans_name = trans.get("NAME", "UNNAMED")
+    def _parse_mapping_xml(self, xml_file: Path):
+        """Parse individual mapping XML file"""
+        try:
+            tree = ET.parse(xml_file)
+            root = tree.getroot()
             
-            self.transformation_catalog[trans_type].append({
-                "mapping": mapping_name,
-                "name": trans_name,
-                "type": trans_type,
-                "xml_file": str(xml_file)
-            })
-            
-            # Route to specific parsers based on type
-            if trans_type == "Expression":
-                self._parse_expression_transformation(trans, mapping_name)
-            elif trans_type == "Aggregator":
-                self._parse_aggregator_transformation(trans, mapping_name)
-            elif trans_type == "Joiner":
-                self._parse_joiner_transformation(trans, mapping_name)
-            elif trans_type == "Filter":
-                self._parse_filter_transformation(trans, mapping_name)
-            elif trans_type == "Lookup":
-                self._parse_lookup_transformation(trans, mapping_name)
-            elif trans_type == "Sorter":
-                self._parse_sorter_transformation(trans, mapping_name)
-            elif trans_type == "Router":
-                self._parse_router_transformation(trans, mapping_name)
-            elif trans_type == "Union":
-                self._parse_union_transformation(trans, mapping_name)
-            elif trans_type in ["Custom", "External Procedure"]:
-                self._parse_custom_transformation(trans, mapping_name)
+            # Parse different transformation types
+            for transform in root.findall('.//TRANSFORMATION'):
+                transform_type = transform.get('TYPE', '').lower()
+                transform_name = transform.get('NAME', '')
+                
+                self.transformation_counts[transform_type] += 1
+                
+                if transform_type == 'expression':
+                    self._parse_expression_transformation(transform, xml_file.name)
+                elif transform_type == 'aggregator':
+                    self._parse_aggregator_transformation(transform, xml_file.name)
+                elif transform_type == 'joiner':
+                    self._parse_joiner_transformation(transform, xml_file.name)
+                elif transform_type == 'filter':
+                    self._parse_filter_transformation(transform, xml_file.name)
+                elif transform_type == 'lookup procedure':
+                    self._parse_lookup_transformation(transform, xml_file.name)
+                elif transform_type == 'router':
+                    self._parse_router_transformation(transform, xml_file.name)
+                elif transform_type == 'sorter':
+                    self._parse_sorter_transformation(transform, xml_file.name)
+                elif transform_type == 'union':
+                    self._parse_union_transformation(transform, xml_file.name)
+                elif transform_type in ['custom', 'java', 'external procedure']:
+                    self._parse_custom_transformation(transform, xml_file.name)
+        
+        except ET.ParseError as e:
+            logger.error(f"XML parsing error in {xml_file.name}: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error parsing {xml_file.name}: {str(e)}")
     
-    def _parse_expression_transformation(self, trans_elem: ET.Element, mapping: str) -> None:
-        """Extract and analyze Expression transformation logic."""
-        trans_name = trans_elem.get("NAME")
+    def _parse_expression_transformation(self, transform: ET.Element, source_file: str):
+        """Parse Expression transformation"""
+        name = transform.get('NAME', '')
+        description = transform.get('DESCRIPTION', '')
         
-        for port in trans_elem.findall(".//TRANSFORMFIELD"):
-            port_name = port.get("NAME")
-            port_type = port.get("PORTTYPE", "INPUT")
-            datatype = port.get("DATATYPE")
-            expression = port.get("EXPRESSION", "")
+        ports = []
+        expressions = []
+        
+        for port in transform.findall('.//TRANSFORMFIELD'):
+            port_info = {
+                'name': port.get('NAME', ''),
+                'datatype': port.get('DATATYPE', ''),
+                'precision': port.get('PRECISION', ''),
+                'scale': port.get('SCALE', ''),
+                'port_type': port.get('PORTTYPE', ''),
+                'expression': port.get('EXPRESSION', '')
+            }
+            ports.append(port_info)
             
-            if expression and port_type in ["OUTPUT", "VARIABLE"]:
-                formula_info = {
-                    "mapping": mapping,
-                    "transformation": trans_name,
-                    "port_name": port_name,
-                    "port_type": port_type,
-                    "datatype": datatype,
-                    "expression": expression,
-                    "complexity": self._assess_expression_complexity(expression),
-                    "pyspark_equivalent": self._convert_expression_to_pyspark(expression, port_name)
+            if port_info['expression']:
+                expr_info = {
+                    'port_name': port_info['name'],
+                    'expression': port_info['expression'],
+                    'datatype': port_info['datatype']
                 }
-                
-                self.expression_formulas.append(formula_info)
-                
-                # Identify patterns
-                pattern_type = self._identify_expression_pattern(expression)
-                self.transformation_patterns[pattern_type].append(formula_info)
-    
-    def _parse_aggregator_transformation(self, trans_elem: ET.Element, mapping: str) -> None:
-        """Extract and analyze Aggregator transformation logic."""
-        trans_name = trans_elem.get("NAME")
-        
-        group_by_ports = []
-        aggregate_ports = []
-        
-        for port in trans_elem.findall(".//TRANSFORMFIELD"):
-            port_name = port.get("NAME")
-            port_type = port.get("PORTTYPE")
-            expression = port.get("EXPRESSION", "")
-            
-            # Check if it's a group by port
-            is_group_by = port.get("GROUPBY") == "YES"
-            
-            if is_group_by:
-                group_by_ports.append(port_name)
-            
-            if expression and any(func in expression.upper() for func in 
-                                 ["SUM", "AVG", "COUNT", "MIN", "MAX", "FIRST", "LAST"]):
-                aggregate_ports.append({
-                    "port_name": port_name,
-                    "expression": expression,
-                    "datatype": port.get("DATATYPE")
-                })
-        
-        agg_info = {
-            "mapping": mapping,
-            "transformation": trans_name,
-            "group_by_ports": group_by_ports,
-            "aggregate_ports": aggregate_ports,
-            "pyspark_code": self._generate_aggregator_pyspark(
-                group_by_ports, aggregate_ports, trans_name
-            )
-        }
-        
-        self.aggregator_logic.append(agg_info)
-    
-    def _parse_joiner_transformation(self, trans_elem: ET.Element, mapping: str) -> None:
-        """Extract and analyze Joiner transformation logic."""
-        trans_name = trans_elem.get("NAME")
-        join_type = trans_elem.get("JOINTYPE", "NORMAL")
-        join_condition = trans_elem.get("JOINCONDITION", "")
-        
-        # Extract master and detail sources
-        master_source = None
-        detail_source = None
-        
-        for attr in trans_elem.findall(".//TABLEATTRIBUTE"):
-            if attr.get("NAME") == "Master Source Table":
-                master_source = attr.get("VALUE")
-            elif attr.get("NAME") == "Detail Source Table":
-                detail_source = attr.get("VALUE")
-        
-        join_info = {
-            "mapping": mapping,
-            "transformation": trans_name,
-            "join_type": self._map_join_type(join_type),
-            "join_condition": join_condition,
-            "master_source": master_source,
-            "detail_source": detail_source,
-            "parsed_conditions": self._parse_join_condition(join_condition),
-            "pyspark_code": self._generate_joiner_pyspark(
-                join_type, join_condition, master_source, detail_source
-            )
-        }
-        
-        self.joiner_conditions.append(join_info)
-    
-    def _parse_filter_transformation(self, trans_elem: ET.Element, mapping: str) -> None:
-        """Extract and analyze Filter transformation logic."""
-        trans_name = trans_elem.get("NAME")
-        filter_condition = trans_elem.get("FILTERCONDITION", "")
-        
-        filter_info = {
-            "mapping": mapping,
-            "transformation": trans_name,
-            "filter_condition": filter_condition,
-            "complexity": self._assess_expression_complexity(filter_condition),
-            "pyspark_code": self._generate_filter_pyspark(filter_condition)
-        }
-        
-        self.filter_conditions.append(filter_info)
-    
-    def _parse_lookup_transformation(self, trans_elem: ET.Element, mapping: str) -> None:
-        """Extract and analyze Lookup transformation logic."""
-        trans_name = trans_elem.get("NAME")
-        lookup_table = trans_elem.get("LOOKUPTABLE", "")
-        
-        lookup_ports = []
-        return_ports = []
-        lookup_condition = ""
-        caching_strategy = "NONE"
-        
-        for attr in trans_elem.findall(".//TABLEATTRIBUTE"):
-            attr_name = attr.get("NAME")
-            attr_value = attr.get("VALUE")
-            
-            if attr_name == "Lookup Policy on Multiple Match":
-                lookup_condition = attr_value
-            elif attr_name == "Lookup Caching Enabled":
-                caching_strategy = "CACHED" if attr_value == "YES" else "UNCACHED"
-            elif attr_name == "Lookup Cache Persistent":
-                if attr_value == "YES":
-                    caching_strategy = "PERSISTENT"
-        
-        for port in trans_elem.findall(".//TRANSFORMFIELD"):
-            port_name = port.get("NAME")
-            port_type = port.get("PORTTYPE")
-            
-            if port_type == "INPUT/OUTPUT" or port_type == "INPUT":
-                lookup_ports.append(port_name)
-            elif port_type == "OUTPUT":
-                return_ports.append({
-                    "name": port_name,
-                    "datatype": port.get("DATATYPE")
-                })
-        
-        lookup_info = {
-            "mapping": mapping,
-            "transformation": trans_name,
-            "lookup_table": lookup_table,
-            "lookup_ports": lookup_ports,
-            "return_ports": return_ports,
-            "caching_strategy": caching_strategy,
-            "pyspark_code": self._generate_lookup_pyspark(
-                lookup_table, lookup_ports, return_ports, caching_strategy
-            )
-        }
-        
-        self.lookup_transformations.append(lookup_info)
-    
-    def _parse_sorter_transformation(self, trans_elem: ET.Element, mapping: str) -> None:
-        """Extract and analyze Sorter transformation logic."""
-        trans_name = trans_elem.get("NAME")
-        
-        sort_keys = []
-        
-        for port in trans_elem.findall(".//TRANSFORMFIELD"):
-            sort_key = port.get("SORTKEY")
-            if sort_key:
-                sort_keys.append({
-                    "port_name": port.get("NAME"),
-                    "sort_order": "DESC" if port.get("SORTDIRECTION") == "DESCENDING" else "ASC",
-                    "sort_key_position": sort_key
-                })
-        
-        # Sort by position
-        sort_keys.sort(key=lambda x: int(x.get("sort_key_position", 0)))
-        
-        sorter_info = {
-            "mapping": mapping,
-            "transformation": trans_name,
-            "sort_keys": sort_keys,
-            "pyspark_code": self._generate_sorter_pyspark(sort_keys)
-        }
-        
-        self.sorter_logic.append(sorter_info)
-    
-    def _parse_router_transformation(self, trans_elem: ET.Element, mapping: str) -> None:
-        """Extract and analyze Router transformation logic."""
-        trans_name = trans_elem.get("NAME")
-        
-        router_groups = []
-        
-        for group in trans_elem.findall(".//ROUTERGROUP"):
-            group_name = group.get("NAME")
-            group_condition = group.get("CONDITION", "")
-            
-            router_groups.append({
-                "group_name": group_name,
-                "condition": group_condition,
-                "pyspark_filter": self._convert_expression_to_pyspark(group_condition, "filter")
-            })
-        
-        router_info = {
-            "mapping": mapping,
-            "transformation": trans_name,
-            "router_groups": router_groups,
-            "pyspark_code": self._generate_router_pyspark(router_groups)
-        }
-        
-        self.router_logic.append(router_info)
-    
-    def _parse_union_transformation(self, trans_elem: ET.Element, mapping: str) -> None:
-        """Extract and analyze Union transformation logic."""
-        trans_name = trans_elem.get("NAME")
-        
-        union_info = {
-            "mapping": mapping,
-            "transformation": trans_name,
-            "pyspark_code": self._generate_union_pyspark()
-        }
-        
-        self.union_logic.append(union_info)
-    
-    def _parse_custom_transformation(self, trans_elem: ET.Element, mapping: str) -> None:
-        """Extract and analyze custom transformation code."""
-        trans_name = trans_elem.get("NAME")
-        trans_type = trans_elem.get("TYPE")
-        
-        custom_code = ""
-        language = "UNKNOWN"
-        
-        for attr in trans_elem.findall(".//TABLEATTRIBUTE"):
-            attr_name = attr.get("NAME")
-            if attr_name == "Custom Transformation Code":
-                custom_code = attr.get("VALUE", "")
-            elif attr_name == "Language":
-                language = attr.get("VALUE", "")
-        
-        custom_info = {
-            "mapping": mapping,
-            "transformation": trans_name,
-            "type": trans_type,
-            "language": language,
-            "custom_code": custom_code,
-            "complexity_assessment": self._assess_custom_code_complexity(custom_code),
-            "migration_notes": self._generate_custom_migration_notes(custom_code, language)
-        }
-        
-        self.custom_transformations.append(custom_info)
-    
-    def _assess_expression_complexity(self, expression: str) -> str:
-        """Assess complexity of an expression."""
-        if not expression:
-            return "NONE"
-        
-        complexity_score = 0
-        
-        # Check for nested functions
-        complexity_score += expression.count("(") * 1
-        
-        # Check for conditional logic
-        if "IIF" in expression.upper() or "DECODE" in expression.upper():
-            complexity_score += 3
-        
-        # Check for string operations
-        if any(func in expression.upper() for func in ["SUBSTR", "INSTR", "CONCAT", "REPLACE"]):
-            complexity_score += 2
-        
-        # Check for date operations
-        if any(func in expression.upper() for func in ["TO_DATE", "ADD_TO_DATE", "SYSDATE"]):
-            complexity_score += 2
-        
-        if complexity_score == 0:
-            return "SIMPLE"
-        elif complexity_score < 5:
-            return "MODERATE"
-        elif complexity_score < 10:
-            return "COMPLEX"
-        else:
-            return "VERY_COMPLEX"
-    
-    def _identify_expression_pattern(self, expression: str) -> str:
-        """Identify reusable patterns in expressions."""
-        expr_upper = expression.upper()
-        
-        if "IIF" in expr_upper or "DECODE" in expr_upper:
-            return "CONDITIONAL_LOGIC"
-        elif any(func in expr_upper for func in ["SUBSTR", "INSTR", "CONCAT"]):
-            return "STRING_MANIPULATION"
-        elif any(func in expr_upper for func in ["TO_DATE", "ADD_TO_DATE", "SYSDATE"]):
-            return "DATE_OPERATIONS"
-        elif any(func in expr_upper for func in ["ROUND", "TRUNC", "ABS"]):
-            return "NUMERIC_OPERATIONS"
-        elif "LOOKUP" in expr_upper:
-            return "LOOKUP_OPERATION"
-        else:
-            return "GENERAL_TRANSFORMATION"
-    
-    def _convert_expression_to_pyspark(self, expression: str, port_name: str) -> str:
-        """Convert Informatica expression to PySpark equivalent."""
-        if not expression:
-            return ""
-        
-        pyspark_expr = expression
-        
-        # Mapping of Informatica functions to PySpark
-        function_mappings = {
-            r'\bIIF\s*\(': 'F.when(',
-            r'\bTO_DATE\s*\(': 'F.to_date(',
-            r'\bTO_CHAR\s*\(': 'F.date_format(',
-            r'\bSUBSTR\s*\(': 'F.substring(',
-            r'\bINSTR\s*\(': 'F.locate(',
-            r'\bCONCAT\s*\(': 'F.concat(',
-            r'\bNVL\s*\(': 'F.coalesce(',
-            r'\bTRIM\s*\(': 'F.trim(',
-            r'\bLTRIM\s*\(': 'F.ltrim(',
-            r'\bRTRIM\s*\(': 'F.rtrim(',
-            r'\bUPPER\s*\(': 'F.upper(',
-            r'\bLOWER\s*\(': 'F.lower(',
-            r'\bLENGTH\s*\(': 'F.length(',
-            r'\bROUND\s*\(': 'F.round(',
-            r'\bTRUNC\s*\(': 'F.trunc(',
-            r'\bABS\s*\(': 'F.abs(',
-            r'\bSYSDATE': 'F.current_timestamp()',
-            r'\|\|': '+',
-        }
-        
-        for infa_func, spark_func in function_mappings.items():
-            pyspark_expr = re.sub(infa_func, spark_func, pyspark_expr, flags=re.IGNORECASE)
-        
-        # Handle IIF to when/otherwise conversion
-        pyspark_expr = self._convert_iif_to_when(pyspark_expr)
-        
-        return f"F.col('{port_name}').alias('{port_name}')  # {pyspark_expr}"
-    
-    def _convert_iif_to_when(self, expression: str) -> str:
-        """Convert IIF statements to PySpark when/otherwise."""
-        # This is a simplified conversion - production code would need more robust parsing
-        if "IIF" in expression.upper():
-            return expression.replace("IIF(", "F.when(").replace(",", ").otherwise(")
-        return expression
-    
-    def _map_join_type(self, infa_join_type: str) -> str:
-        """Map Informatica join types to PySpark."""
-        join_mapping = {
-            "NORMAL": "inner",
-            "MASTER OUTER": "left_outer",
-            "DETAIL OUTER": "right_outer",
-            "FULL OUTER": "outer"
-        }
-        return join_mapping.get(infa_join_type.upper(), "inner")
-    
-    def _parse_join_condition(self, condition: str) -> List[Dict[str, str]]:
-        """Parse join condition into structured format."""
-        conditions = []
-        if not condition:
-            return conditions
-        
-        # Split on AND
-        parts = re.split(r'\s+AND\s+', condition, flags=re.IGNORECASE)
-        
-        for part in parts:
-            # Extract left and right columns
-            match = re.match(r'(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)', part.strip())
-            if match:
-                conditions.append({
-                    "left_table": match.group(1),
-                    "left_column": match.group(2),
-                    "right_table": match.group(3),
-                    "right_column": match.group(4)
-                })
-        
-        return conditions
-    
-    def _generate_aggregator_pyspark(self, group_by_ports: List[str], 
-                                    aggregate_ports: List[Dict], trans_name: str) -> str:
-        """Generate PySpark code for Aggregator transformation."""
-        code_lines = [
-            f"# Aggregator: {trans_name}",
-            f"df_{trans_name} = df.groupBy(",
-        ]
-        
-        if group_by_ports:
-            group_cols = ", ".join([f"F.col('{col}')" for col in group_by_ports])
-            code_lines.append(f"    {group_cols}")
-        
-        code_lines.append(").agg(")
-        
-        agg_expressions = []
-        for agg_port in aggregate_ports:
-            expr = agg_port['expression'].upper()
-            port_name = agg_port['port_name']
-            
-            if "SUM(" in expr:
-                col = self._extract_column_from_agg(expr, "SUM")
-                agg_expressions.append(f"    F.sum(F.col('{col}')).alias('{port_name}')")
-            elif "AVG(" in expr:
-                col = self._extract_column_from_agg(expr, "AVG")
-                agg_expressions.append(f"    F.avg(F.col('{col}')).alias('{port_name}')")
-            elif "COUNT(" in expr:
-                col = self._extract_column_from_agg(expr, "COUNT")
-                agg_expressions.append(f"    F.count(F.col('{col}')).alias('{port_name}')")
-            elif "MIN(" in expr:
-                col = self._extract_column_from_agg(expr, "MIN")
-                agg_expressions.append(f"    F.min(F.col('{col}')).alias('{port_name}')")
-            elif "MAX(" in expr:
-                col = self._extract_column_from_agg(expr, "MAX")
-                agg_expressions.append(f"    F.max(F.col('{col}')).alias('{port_name}')")
-        
-        code_lines.append(",\n".join(agg_expressions))
-        code_lines.append(")")
-        
-        return "\n".join(code_lines)
-    
-    def _extract_column_from_agg(self, expression: str, function: str) -> str:
-        """Extract column name from aggregate function."""
-        pattern = rf'{function}\s*\(\s*(\w+)\s*\)'
-        match = re.search(pattern, expression, re.IGNORECASE)
-        return match.group(1) if match else "unknown_column"
-    
-    def _generate_joiner_pyspark(self, join_type: str, condition: str, 
-                                master: str, detail: str) -> str:
-        """Generate PySpark code for Joiner transformation."""
-        spark_join_type = self._map_join_type(join_type)
-        parsed_conditions = self._parse_join_condition(condition)
-        
-        code_lines = [
-            f"# Joiner: {master} and {detail}",
-            f"df_joined = df_{master}.join(",
-            f"    df_{detail},",
-        ]
-        
-        if parsed_conditions:
-            join_conditions = []
-            for cond in parsed_conditions:
-                join_conditions.append(
-                    f"(df_{master}['{cond['left_column']}'] == df_{detail}['{cond['right_column']}'])"
-                )
-            
-            code_lines.append(f"    {' & '.join(join_conditions)},")
-        
-        code_lines.append(f"    how='{spark_join_type}'")
-        code_lines.append(")")
-        
-        return "\n".join(code_lines)
-    
-    def _generate_filter_pyspark(self, condition: str) -> str:
-        """Generate PySpark code for Filter transformation."""
-        pyspark_condition = self._convert_expression_to_pyspark(condition, "filter")
-        
-        return f"""# Filter transformation
-df_filtered = df.filter({pyspark_condition})"""
-    
-    def _generate_lookup_pyspark(self, lookup_table: str, lookup_ports: List[str], 
-                                return_ports: List[Dict], caching: str) -> str:
-        """Generate PySpark code for Lookup transformation."""
-        code_lines = [
-            f"# Lookup: {lookup_table}",
-            f"df_lookup = spark.table('{lookup_table}')",
-        ]
-        
-        if caching == "CACHED" or caching == "PERSISTENT":
-            code_lines.append("df_lookup.cache()")
-        
-        if lookup_ports:
-            join_conditions = [f"df['{port}'] == df_lookup['{port}']" for port in lookup_ports]
-            code_lines.append(
-                f"\ndf_with_lookup = df.join(\n"
-                f"    df_lookup,\n"
-                f"    {' & '.join(join_conditions)},\n"
-                f"    how='left_outer'\n"
-                f")"
-            )
-        
-        return "\n".join(code_lines)
-    
-    def _generate_sorter_pyspark(self, sort_keys: List[Dict]) -> str:
-        """Generate PySpark code for Sorter transformation."""
-        if not sort_keys:
-            return "# No sort keys defined"
-        
-        sort_expressions = []
-        for key in sort_keys:
-            if key['sort_order'] == 'DESC':
-                sort_expressions.append(f"F.col('{key['port_name']}').desc()")
-            else:
-                sort_expressions.append(f"F.col('{key['port_name']}').asc()")
-        
-        return f"""# Sorter transformation
-df_sorted = df.orderBy({', '.join(sort_expressions)})"""
-    
-    def _generate_router_pyspark(self, router_groups: List[Dict]) -> str:
-        """Generate PySpark code for Router transformation."""
-        code_lines = ["# Router transformation - Create multiple output DataFrames"]
-        
-        for group in router_groups:
-            group_name = group['group_name'].replace(" ", "_")
-            condition = group['pyspark_filter']
-            code_lines.append(f"df_{group_name} = df.filter({condition})")
-        
-        # Add default group
-        all_conditions = " | ".join([f"({g['pyspark_filter']})" for g in router_groups])
-        code_lines.append(f"df_default = df.filter(~({all_conditions}))")
-        
-        return "\n".join(code_lines)
-    
-    def _generate_union_pyspark(self) -> str:
-        """Generate PySpark code for Union transformation."""
-        return """# Union transformation
-df_union = df1.unionByName(df2, allowMissingColumns=True)
-# For multiple DataFrames:
-# from functools import reduce
-# df_union = reduce(DataFrame.unionByName, [df1, df2, df3], allowMissingColumns=True)"""
-    
-    def _assess_custom_code_complexity(self, code: str) -> Dict[str, Any]:
-        """Assess complexity of custom transformation code."""
-        if not code:
-            return {"complexity": "NONE", "lines": 0}
-        
-        lines = code.count("\n") + 1
-        
-        complexity_indicators = {
-            "loops": len(re.findall(r'\b(for|while)\b', code, re.IGNORECASE)),
-            "conditionals": len(re.findall(r'\b(if|case|switch)\b', code, re.IGNORECASE)),
-            "function_calls": len(re.findall(r'\w+\s*\(', code)),
-            "sql_queries": len(re.findall(r'\b(SELECT|INSERT|UPDATE|DELETE)\b', code, re.IGNORECASE))
-        }
-        
-        complexity_score = (
-            lines * 0.1 +
-            complexity_indicators["loops"] * 3 +
-            complexity_indicators["conditionals"] * 2 +
-            complexity_indicators["function_calls"] * 0.5 +
-            complexity_indicators["sql_queries"] * 5
+                expressions.append(expr_info)
+        
+        # Generate PySpark equivalent
+        pyspark_code = self._generate_expression_pyspark(expressions)
+        
+        # Calculate complexity and categorize
+        total_complexity = sum(
+            self.expression_parser.calculate_complexity(expr['expression'])
+            for expr in expressions
         )
         
-        if complexity_score < 10:
-            complexity = "LOW"
-        elif complexity_score < 30:
-            complexity = "MEDIUM"
-        elif complexity_score < 60:
-            complexity = "HIGH"
-        else:
-            complexity = "VERY_HIGH"
+        categories = set()
+        for expr in expressions:
+            categories.update(self.expression_parser.categorize_expression(expr['expression']))
         
-        return {
-            "complexity": complexity,
-            "lines": lines,
-            "complexity_score": complexity_score,
-            "indicators": complexity_indicators
+        expr_transform = ExpressionTransformation(
+            name=name,
+            description=description,
+            ports=ports,
+            expressions=expressions,
+            pyspark_equivalent=pyspark_code,
+            complexity_score=total_complexity,
+            categories=list(categories)
+        )
+        
+        self.transformations['expression'].append(expr_transform)
+        
+        # Document complex business logic
+        if total_complexity > 20:
+            self.business_logic_catalog.append({
+                'type': 'expression',
+                'name': name,
+                'source_file': source_file,
+                'complexity': total_complexity,
+                'expressions': expressions,
+                'categories': list(categories)
+            })
+    
+    def _parse_aggregator_transformation(self, transform: ET.Element, source_file: str):
+        """Parse Aggregator transformation"""
+        name = transform.get('NAME', '')
+        description = transform.get('DESCRIPTION', '')
+        sorted_input = transform.get('SORTEDINPUT', 'NO') == 'YES'
+        
+        group_by_ports = []
+        aggregate_expressions = []
+        aggregate_functions = []
+        
+        for port in transform.findall('.//TRANSFORMFIELD'):
+            port_name = port.get('NAME', '')
+            port_type = port.get('PORTTYPE', '')
+            expression = port.get('EXPRESSION', '')
+            group_by = port.get('GROUPBY', 'NO') == 'YES'
+            
+            if group_by:
+                group_by_ports.append(port_name)
+            
+            if expression and port_type == 'OUTPUT':
+                agg_info = {
+                    'port_name': port_name,
+                    'expression': expression,
+                    'datatype': port.get('DATATYPE', '')
+                }
+                aggregate_expressions.append(agg_info)
+                
+                # Extract aggregate function type
+                expr_upper = expression.upper()
+                for func in ['SUM', 'AVG', 'COUNT', 'MAX', 'MIN', 'FIRST', 'LAST', 'STDDEV', 'VARIANCE']:
+                    if func in expr_upper:
+                        aggregate_functions.append(func)
+        
+        # Generate PySpark equivalent
+        pyspark_code = self._generate_aggregator_pyspark(
+            group_by_ports, aggregate_expressions, sorted_input
+        )
+        
+        agg_transform = AggregatorTransformation(
+            name=name,
+            description=description,
+            group_by_ports=group_by_ports,
+            aggregate_expressions=aggregate_expressions,
+            sorted_input=sorted_input,
+            pyspark_equivalent=pyspark_code,
+            aggregate_functions=list(set(aggregate_functions))
+        )
+        
+        self.transformations['aggregator'].append(agg_transform)
+        
+        # Document complex aggregations
+        if len(aggregate_expressions) > 5 or len(group_by_ports) > 5:
+            self.business_logic_catalog.append({
+                'type': 'aggregator',
+                'name': name,
+                'source_file': source_file,
+                'group_by_count': len(group_by_ports),
+                'aggregate_count': len(aggregate_expressions),
+                'functions': list(set(aggregate_functions))
+            })
+    
+    def _parse_joiner_transformation(self, transform: ET.Element, source_file: str):
+        """Parse Joiner transformation"""
+        name = transform.get('NAME', '')
+        description = transform.get('DESCRIPTION', '')
+        join_type = transform.get('JOINTYPE', 'NORMAL')
+        sorted_input = transform.get('SORTEDINPUT', 'NO') == 'YES'
+        cache_size = transform.get('CACHESIZE', 'AUTO')
+        
+        master_source = ''
+        detail_source = ''
+        join_condition = transform.get('JOINCONDITION', '')
+        
+        # Parse source information from connectors
+        for connector in transform.findall('.//CONNECTOR'):
+            from_instance = connector.get('FROMINSTANCE', '')
+            to_instance = connector.get('TOINSTANCE', '')
+            
+            if 'MASTER' in from_instance.upper():
+                master_source = from_instance
+            elif 'DETAIL' in from_instance.upper():
+                detail_source = from_instance
+        
+        # Map join type to PySpark
+        join_type_map = {
+            'NORMAL': 'inner',
+            'MASTER OUTER': 'left',
+            'DETAIL OUTER': 'right',
+            'FULL OUTER': 'outer'
         }
+        pyspark_join_type = join_type_map.get(join_type.upper(), 'inner')
+        
+        # Generate PySpark equivalent
+        pyspark_code = self._generate_joiner_pyspark(
+            master_source, detail_source, join_condition, pyspark_join_type, sorted_input
+        )
+        
+        joiner_transform = JoinerTransformation(
+            name=name,
+            description=description,
+            master_source=master_source,
+            detail_source=detail_source,
+            join_type=join_type,
+            join_condition=join_condition,
+            sorted=sorted_input,
+            cache_size=cache_size,
+            pyspark_equivalent=pyspark_code
+        )
+        
+        self.transformations['joiner'].append(joiner_transform)
+        
+        # Document complex joins
+        if 'AND' in join_condition.upper() or 'OR' in join_condition.upper():
+            self.business_logic_catalog.append({
+                'type': 'joiner',
+                'name': name,
+                'source_file': source_file,
+                'join_type': join_type,
+                'condition': join_condition,
+                'complexity': 'COMPLEX_CONDITION'
+            })
     
-    def _generate_custom_migration_notes(self, code: str, language: str) -> str:
-        """Generate migration notes for custom transformations."""
-        notes = []
+    def _parse_filter_transformation(self, transform: ET.Element, source_file: str):
+        """Parse Filter transformation"""
+        name = transform.get('NAME', '')
+        description = transform.get('DESCRIPTION', '')
+        filter_condition = transform.get('FILTERCONDITION', '')
         
-        if not code:
-            return "No custom code to migrate"
+        ports = []
+        for port in transform.findall('.//TRANSFORMFIELD'):
+            port_info = {
+                'name': port.get('NAME', ''),
+                'datatype': port.get('DATATYPE', ''),
+                'port_type': port.get('PORTTYPE', '')
+            }
+            ports.append(port_info)
         
-        notes.append(f"Original Language: {language}")
+        # Calculate condition complexity
+        condition_complexity = self.expression_parser.calculate_complexity(filter_condition)
         
-        if language.upper() in ["C", "C++"]:
-            notes.append("Consider reimplementing in Python or using PySpark UDFs")
-            notes.append("Review performance implications of UDFs")
+        # Generate PySpark equivalent
+        pyspark_code = self._generate_filter_pyspark(filter_condition)
         
-        if "SQL" in code.upper():
-            notes.append("Embedded SQL detected - convert to DataFrame operations where possible")
+        filter_transform = FilterTransformation(
+            name=name,
+            description=description,
+            filter_condition=filter_condition,
+            ports=ports,
+            pyspark_equivalent=pyspark_code,
+            condition_complexity=condition_complexity
+        )
         
-        if any(func in code.upper() for func in ["CURSOR", "FETCH", "OPEN"]):
-            notes.append("Cursor-based logic detected - refactor to set-based operations")
+        self.transformations['filter'].append(filter_transform)
         
-        return " | ".join(notes)
+        # Document complex filters
+        if condition_complexity > 15:
+            self.business_logic_catalog.append({
+                'type': 'filter',
+                'name': name,
+                'source_file': source_file,
+                'condition': filter_condition,
+                'complexity': condition_complexity
+            })
     
-    def generate_transformation_catalog(self) -> Dict[str, Any]:
-        """Generate comprehensive transformation catalog with counts and examples."""
-        catalog = {
-            "summary": {
-                "total_transformations": sum(len(v) for v in self.transformation_catalog.values()),
-                "transformation_types": {k: len(v) for k, v in self.transformation_catalog.items()}
-            },
-            "expression_transformations": {
-                "count": len(self.expression_formulas),
-                "complexity_distribution": Counter([e['complexity'] for e in self.expression_formulas]),
-                "pattern_distribution": {k: len(v) for k, v in self.transformation_patterns.items()},
-                "examples": self.expression_formulas[:5]
-            },
-            "aggregator_transformations": {
-                "count": len(self.aggregator_logic),
-                "examples": self.aggregator_logic[:3]
-            },
-            "joiner_transformations": {
-                "count": len(self.joiner_conditions),
-                "join_type_distribution": Counter([j['join_type'] for j in self.joiner_conditions]),
-                "examples": self.joiner_conditions[:3]
-            },
-            "filter_transformations": {
-                "count": len(self.filter_conditions),
-                "complexity_distribution": Counter([f['complexity'] for f in self.filter_conditions]),
-                "examples": self.filter_conditions[:3]
-            },
-            "lookup_transformations": {
-                "count
+    def _parse_lookup_transformation(self, transform: ET.Element, source_file: str):
+        """Parse Lookup transformation"""
+        name = transform.get('NAME', '')
+        description = transform.get('DESCRIPTION', '')
+        lookup_table = transform.get('LOOKUPTABLE', '')
+        cache_type = transform.get('CACHETYPE', 'AUTO')
+        cache_size = transform.get('CACHESIZE', 'AUTO')
+        
+        lookup_condition = ''
+        return_ports = []
+        lookup_sql = transform.get('LOOKUPOVERRIDE', '')
+        
+        for port in transform.findall('.//TRANSFORMFIELD'):
+            port_type = port.get('PORTTYPE', '')
+            if port_type == 'LOOKUP':
+                lookup_condition = port.get('EXPRESSION', '')
+            elif port_type == 'RETURN':
+                return_ports.append(port.get('NAME', ''))
+        
+        # Determine caching strategy
+        cache_strategy = self._determine_cache_strategy(cache_type, cache_size)
+        
+        # Generate PySpark equivalent
+        pyspark_code = self._generate_lookup_pyspark(
+            lookup_table, lookup_condition, return_ports, cache_strategy, lookup_sql
+        )
+        
+        lookup_transform = LookupTransformation(
+            name=name,
+            description=description,
+            lookup_table=lookup_table,
+            lookup_condition=lookup_condition,
+            return_ports=return_ports,
+            cache_type=cache_type,
+            cache_size=cache_size,
+            lookup_sql=lookup_sql,
+            pyspark_equivalent=pyspark_code,
+            cache_strategy=cache_strategy
+        )
+        
+        self.transformations['lookup'].append(lookup_transform)
+        
+        # Document all lookups
+        self.business_logic_catalog.append({
+            'type': 'lookup',
+            'name': name,
+            'source_file': source_file,
+            'table': lookup_table,
+            'condition': lookup_condition,
+            'cache_strategy': cache_strategy,
+            'has_override': bool(lookup_sql)
+        })
+    
+    def _parse_router_transformation(self, transform: ET.Element, source_file: str):
+        """Parse Router transformation"""
+        name = transform.get('NAME', '')
+        description = transform.get('DESCRIPTION', '')
+        
+        routing_groups = []
+        default_group = False
+        
+        for group in transform.findall('.//ROUTERGROUP'):
+            group_name = group.get('GROUPNAME', '')
+            group_condition = group.get('CONDITION', '')
+            group_order = group.get('GROUPORDER', '0')
+            
+            if group_name.upper() == 'DEFAULT':
+                default_group = True
+            
+            routing_groups.append({
+                'name': group_name,
+                'condition': group_condition,
+                'order': group_order
+            })
+        
+        # Generate PySpark equivalent
+        pyspark_code = self._generate_router_pyspark(routing_groups, default_group)
+        
+        router_transform = RouterTransformation(
+            name=name,
+            description=description,
+            routing_groups=routing_groups,
+            default_group=default_group,
+            pyspark_equivalent=pyspark_code
+        )
+        
+        self.transformations['router'].append(router_transform)
+        
+        # Document complex routers
+        if len(routing_groups) > 3:
+            self.business_logic_catalog.append({
+                'type': 'router',
+                'name': name,
+                'source_file': source_file,
+                'group_count': len(routing_groups),
+                'has_default': default_group,
+                'groups': routing_groups
+            })
+    
+    def _parse_sorter_transformation(self, transform: ET.Element, source_file: str):
+        """Parse Sorter transformation"""
+        name = transform.get('NAME', '')
+        description = transform.get('DESCRIPTION', '')
+        distinct = transform.get('DISTINCT', 'NO') == 'YES'
+        case_sensitive = transform.get('CASESENSITIVE', 'YES') == 'YES'
+        
+        sort_keys = []
+        for port in transform.findall('.//TRANSFORMFIELD'):
+            sort_key = port.get('SORTKEY', '')
+            if sort_key:
+                sort_keys.append({
+                    'name': port.get('NAME', ''),
+                    'direction': port.get('SORTDIRECTION', 'ASCENDING'),
+                    'order': sort_key
+                })
+        
+        # Generate PySpark equivalent
+        pyspark_code = self._generate_sorter_pyspark(sort_keys, distinct)
+        
+        sorter_transform = SorterTransformation(
+            name=name,
+            description=description,
+            sort_keys=sort_keys,
+            distinct=distinct,
+            case_sensitive=case_sensitive,
+            pyspark_equivalent=pyspark_code
+        )
+        
+        self.transformations['sorter'].append(sorter_transform)
+    
+    def _parse_union_transformation(self, transform: ET.Element, source_file: str):
+        """Parse Union transformation"""
+        name = transform.get('NAME', '')
+        description = transform.get('DESCRIPTION', '')
+        
+        input_groups = []
+        ports = []
+        
+        for group in transform.findall('.//INPUTGROUP'):
+            input_groups.append(group.get('NAME', ''))
+        
+        for port in transform.findall('.//TRANSFORMFIELD'):
+            ports.append({
+                'name': port.get('NAME', ''),
+                'datatype': port.get('DATATYPE', ''),
+                'port_type': port.get('PORTTYPE', '')
+            })
+        
+        # Generate PySpark equivalent
+        pyspark_code = self._generate_union_pyspark(input_groups, len(ports))
+        
+        union_transform = UnionTransformation(
+            name=name,
+            description=description,
+            input_groups=input_groups,
+            ports=ports,
+            pyspark_equivalent=pyspark_code
+        )
+        
+        self.transformations['union'].append(union_transform)
+    
+    def _parse_custom_transformation(self, transform: ET.Element, source_file: str):
+        """Parse Custom transformation"""
+        name = transform.get('NAME', '')
+        description = transform.get('DESCRIPTION', '')
+        transform_type = transform.get('TYPE', '')
+        
+        custom_code = ''
+        language = 'UNKNOWN'
+        
+        # Extract custom code from different possible locations
+        code_element = transform.find('.//CODE')
+        if code_element is not None:
+            custom_code = code_element.text or ''
+            language = code_element.get('LANGUAGE', 'UNKNOWN')
+        
+        # Assess complexity
+        complexity_assessment = self._assess_custom_complexity(custom_code, language)
+        
+        custom_transform = CustomTransformation(
+            name=name,
+            description=description,
+            transformation_type=transform_type,
+            custom_code=custom_code,
+            language=language,
+            complexity_assessment=complexity_assessment,
+            pyspark_equivalent="# Requires manual conversion - review custom code"
+        )
+        
+        self.transformations['custom'].append(custom_transform)
+        
+        # Always document custom transformations
+        self.business_logic_catalog.append({
+            'type': 'custom',
+            'name': name,
+            'source_file': source_file,
+            'language': language,
+            'complexity': complexity_assessment,
+            'code_length': len(custom_code)
+        })
+    
+    def _generate_expression_pyspark(self, expressions: List[Dict[str, str]]) -> str:
+        """Generate PySpark code for Expression transformation"""
+        if not expressions:
+            return "# No expressions to convert"
+        
+        code_lines = [
+            "# Expression Transformation - PySpark Equivalent",
+            "from pyspark.sql import functions as F",
+            "",
+            "df = df"
+        ]
+        
+        for expr in expressions:
+            port_name = expr['port_name']
+            expression = expr['expression']
+            pyspark_expr = self.expression_parser.convert_to_pyspark(expression, port_name)
+            code_lines.append(f"  # {port_name}: {expression}")
+            code_lines.append(f"  .{pyspark_expr.split('.', 1)[1]}")
+        
+        return '\n'.join(code_lines)
+    
+    def _generate_aggregator_pyspark(
+        self, 
+        group_by_ports: List[str], 
+        aggregate_expressions: List[Dict[str, str]],
+        sorted_input: bool
+    ) -> str:
+        """Generate PySpark code for Aggregator transformation"""
+        code_lines = [
+            "# Aggregator Transformation - PySpark Equivalent",
+            "from pyspark.sql import functions as F",
+            ""
+        ]
+        
+        if group_
