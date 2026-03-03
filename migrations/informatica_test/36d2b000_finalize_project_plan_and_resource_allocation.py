@@ -1,323 +1,651 @@
-# PySpark Migration Project - Resource Allocation and Monitoring Framework
+# project_plan_resource_allocation.py
+"""
+Informatica to PySpark Migration - Project Planning and Resource Allocation Framework
+=====================================================================================
 
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import *
-from pyspark.sql.types import *
+This module provides a comprehensive framework for managing the migration project,
+including work breakdown structure, resource allocation, timeline management,
+and success metrics tracking.
+
+Author: Data Engineering Team
+Date: 2024
+Version: 1.0
+"""
+
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql.functions import (
+    col, lit, current_timestamp, date_add, datediff, sum as _sum,
+    count, avg, max as _max, min as _min, when, concat_ws, array,
+    explode, struct, to_json, from_json, collect_list, row_number,
+    dense_rank, percent_rank, lag, lead, window
+)
+from pyspark.sql.types import (
+    StructType, StructField, StringType, IntegerType, DoubleType,
+    DateType, TimestampType, ArrayType, MapType, BooleanType, DecimalType
+)
 from pyspark.sql.window import Window
+from typing import Dict, List, Tuple, Optional, Any
 from datetime import datetime, timedelta
+from dataclasses import dataclass, field, asdict
+from enum import Enum
 import json
+import logging
 
-# Initialize Spark Session for Project Management Analytics
-spark = SparkSession.builder \
-    .appName("InformaticaToPySparkMigrationProjectPlan") \
-    .config("spark.sql.adaptive.enabled", "true") \
-    .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
-    .getOrCreate()
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-# Project Configuration and Constants
-PROJECT_START_DATE = "2024-01-15"
-PROJECT_END_DATE = "2024-12-31"
-BUDGET_TOTAL = 2500000
-TEAM_SIZE = 25
 
-# Work Breakdown Structure Schema
-wbs_schema = StructType([
-    StructField("wbs_id", StringType(), False),
-    StructField("wbs_level", IntegerType(), False),
-    StructField("parent_wbs_id", StringType(), True),
-    StructField("task_name", StringType(), False),
-    StructField("phase", StringType(), False),
-    StructField("estimated_hours", DoubleType(), False),
-    StructField("start_date", DateType(), False),
-    StructField("end_date", DateType(), False),
-    StructField("status", StringType(), False),
-    StructField("assigned_to", StringType(), True),
-    StructField("dependencies", StringType(), True),
-    StructField("critical_path", BooleanType(), False),
-    StructField("completion_percentage", DoubleType(), False)
-])
+class ProjectPhase(Enum):
+    """Project phases for migration lifecycle"""
+    PLANNING = "Planning"
+    ASSESSMENT = "Assessment"
+    DESIGN = "Design"
+    DEVELOPMENT = "Development"
+    TESTING = "Testing"
+    DEPLOYMENT = "Deployment"
+    HYPERCARE = "Hypercare"
+    CLOSURE = "Closure"
 
-# Work Breakdown Structure Data
-wbs_data = [
-    # Phase 1: Assessment and Planning
-    ("1.0", 1, None, "Assessment and Planning", "Phase 1", 800.0, "2024-01-15", "2024-02-29", "In Progress", "Project Manager", None, True, 75.0),
-    ("1.1", 2, "1.0", "Current State Analysis", "Phase 1", 160.0, "2024-01-15", "2024-01-31", "Completed", "Data Architect", None, True, 100.0),
-    ("1.2", 2, "1.0", "Informatica Inventory Assessment", "Phase 1", 120.0, "2024-01-15", "2024-01-31", "Completed", "Senior Developer", "1.1", True, 100.0),
-    ("1.3", 2, "1.0", "Complexity Analysis and Scoring", "Phase 1", 80.0, "2024-02-01", "2024-02-15", "Completed", "Lead Architect", "1.2", True, 100.0),
-    ("1.4", 2, "1.0", "Migration Strategy Definition", "Phase 1", 120.0, "2024-02-01", "2024-02-15", "In Progress", "Data Architect", "1.2", True, 80.0),
-    ("1.5", 2, "1.0", "Tool Selection and POC", "Phase 1", 160.0, "2024-02-16", "2024-02-29", "Not Started", "Technical Lead", "1.4", True, 0.0),
-    ("1.6", 2, "1.0", "Risk Assessment and Mitigation Planning", "Phase 1", 80.0, "2024-02-16", "2024-02-29", "Not Started", "Project Manager", "1.4", False, 0.0),
-    ("1.7", 2, "1.0", "Finalize Project Plan", "Phase 1", 80.0, "2024-02-20", "2024-02-29", "Not Started", "Project Manager", "1.5,1.6", True, 0.0),
-    
-    # Phase 2: Infrastructure Setup
-    ("2.0", 1, None, "Infrastructure and Environment Setup", "Phase 2", 640.0, "2024-03-01", "2024-03-31", "Not Started", "DevOps Lead", "1.0", True, 0.0),
-    ("2.1", 2, "2.0", "Databricks/Spark Cluster Setup", "Phase 2", 120.0, "2024-03-01", "2024-03-10", "Not Started", "DevOps Engineer", "1.7", True, 0.0),
-    ("2.2", 2, "2.0", "CI/CD Pipeline Configuration", "Phase 2", 160.0, "2024-03-11", "2024-03-20", "Not Started", "DevOps Engineer", "2.1", True, 0.0),
-    ("2.3", 2, "2.0", "Logging and Monitoring Setup", "Phase 2", 120.0, "2024-03-11", "2024-03-20", "Not Started", "DevOps Engineer", "2.1", False, 0.0),
-    ("2.4", 2, "2.0", "Security and Access Control", "Phase 2", 80.0, "2024-03-21", "2024-03-27", "Not Started", "Security Engineer", "2.2", False, 0.0),
-    ("2.5", 2, "2.0", "Data Lake Architecture Setup", "Phase 2", 160.0, "2024-03-21", "2024-03-31", "Not Started", "Data Architect", "2.2", True, 0.0),
-    
-    # Phase 3: Framework Development
-    ("3.0", 1, None, "Migration Framework Development", "Phase 3", 960.0, "2024-04-01", "2024-05-15", "Not Started", "Technical Lead", "2.0", True, 0.0),
-    ("3.1", 2, "3.0", "Reusable Component Library", "Phase 3", 240.0, "2024-04-01", "2024-04-20", "Not Started", "Senior Developer", "2.5", True, 0.0),
-    ("3.2", 2, "3.0", "Data Quality Framework", "Phase 3", 200.0, "2024-04-01", "2024-04-20", "Not Started", "QA Lead", "2.5", True, 0.0),
-    ("3.3", 2, "3.0", "Metadata Management Framework", "Phase 3", 160.0, "2024-04-21", "2024-05-05", "Not Started", "Data Engineer", "3.1", False, 0.0),
-    ("3.4", 2, "3.0", "Error Handling and Recovery", "Phase 3", 120.0, "2024-04-21", "2024-05-05", "Not Started", "Senior Developer", "3.1", True, 0.0),
-    ("3.5", 2, "3.0", "Performance Optimization Utilities", "Phase 3", 160.0, "2024-05-06", "2024-05-15", "Not Started", "Performance Engineer", "3.4", True, 0.0),
-    ("3.6", 2, "3.0", "Testing Framework and Automation", "Phase 3", 80.0, "2024-05-06", "2024-05-15", "Not Started", "QA Engineer", "3.2", False, 0.0),
-    
-    # Phase 4: Wave 1 - Simple Mappings
-    ("4.0", 1, None, "Wave 1 - Simple Mapping Migration", "Phase 4", 1280.0, "2024-05-16", "2024-07-15", "Not Started", "Development Team", "3.0", True, 0.0),
-    ("4.1", 2, "4.0", "Code Conversion - Simple Mappings", "Phase 4", 480.0, "2024-05-16", "2024-06-15", "Not Started", "Development Team", "3.5", True, 0.0),
-    ("4.2", 2, "4.0", "Unit Testing - Wave 1", "Phase 4", 320.0, "2024-06-01", "2024-06-30", "Not Started", "QA Team", "4.1", True, 0.0),
-    ("4.3", 2, "4.0", "Integration Testing - Wave 1", "Phase 4", 240.0, "2024-06-16", "2024-07-05", "Not Started", "QA Team", "4.2", True, 0.0),
-    ("4.4", 2, "4.0", "Performance Testing - Wave 1", "Phase 4", 160.0, "2024-06-25", "2024-07-10", "Not Started", "Performance Team", "4.3", False, 0.0),
-    ("4.5", 2, "4.0", "Production Deployment - Wave 1", "Phase 4", 80.0, "2024-07-11", "2024-07-15", "Not Started", "DevOps Team", "4.3,4.4", True, 0.0),
-    
-    # Phase 5: Wave 2 - Medium Complexity
-    ("5.0", 1, None, "Wave 2 - Medium Complexity Migration", "Phase 5", 1920.0, "2024-07-16", "2024-09-30", "Not Started", "Development Team", "4.0", True, 0.0),
-    ("5.1", 2, "5.0", "Code Conversion - Medium Mappings", "Phase 5", 800.0, "2024-07-16", "2024-08-31", "Not Started", "Development Team", "4.5", True, 0.0),
-    ("5.2", 2, "5.0", "Unit Testing - Wave 2", "Phase 5", 480.0, "2024-08-01", "2024-09-10", "Not Started", "QA Team", "5.1", True, 0.0),
-    ("5.3", 2, "5.0", "Integration Testing - Wave 2", "Phase 5", 320.0, "2024-08-20", "2024-09-20", "Not Started", "QA Team", "5.2", True, 0.0),
-    ("5.4", 2, "5.0", "Performance Testing - Wave 2", "Phase 5", 240.0, "2024-09-01", "2024-09-25", "Not Started", "Performance Team", "5.3", False, 0.0),
-    ("5.5", 2, "5.0", "Production Deployment - Wave 2", "Phase 5", 80.0, "2024-09-26", "2024-09-30", "Not Started", "DevOps Team", "5.3,5.4", True, 0.0),
-    
-    # Phase 6: Wave 3 - Complex Mappings
-    ("6.0", 1, None, "Wave 3 - Complex Mapping Migration", "Phase 6", 2560.0, "2024-10-01", "2024-12-15", "Not Started", "Development Team", "5.0", True, 0.0),
-    ("6.1", 2, "6.0", "Code Conversion - Complex Mappings", "Phase 6", 1120.0, "2024-10-01", "2024-11-15", "Not Started", "Senior Development Team", "5.5", True, 0.0),
-    ("6.2", 2, "6.0", "Unit Testing - Wave 3", "Phase 6", 640.0, "2024-10-20", "2024-11-30", "Not Started", "QA Team", "6.1", True, 0.0),
-    ("6.3", 2, "6.0", "Integration Testing - Wave 3", "Phase 6", 400.0, "2024-11-10", "2024-12-05", "Not Started", "QA Team", "6.2", True, 0.0),
-    ("6.4", 2, "6.0", "Performance Testing - Wave 3", "Phase 6", 320.0, "2024-11-20", "2024-12-10", "Not Started", "Performance Team", "6.3", False, 0.0),
-    ("6.5", 2, "6.0", "Production Deployment - Wave 3", "Phase 6", 80.0, "2024-12-11", "2024-12-15", "Not Started", "DevOps Team", "6.3,6.4", True, 0.0),
-    
-    # Phase 7: Closure
-    ("7.0", 1, None, "Project Closure and Optimization", "Phase 7", 480.0, "2024-12-16", "2024-12-31", "Not Started", "Project Team", "6.0", True, 0.0),
-    ("7.1", 2, "7.0", "Hypercare and Support", "Phase 7", 240.0, "2024-12-16", "2024-12-31", "Not Started", "Support Team", "6.5", False, 0.0),
-    ("7.2", 2, "7.0", "Documentation Finalization", "Phase 7", 80.0, "2024-12-16", "2024-12-25", "Not Started", "Technical Writers", "6.5", False, 0.0),
-    ("7.3", 2, "7.0", "Knowledge Transfer", "Phase 7", 80.0, "2024-12-16", "2024-12-25", "Not Started", "Project Team", "7.2", False, 0.0),
-    ("7.4", 2, "7.0", "Lessons Learned Workshop", "Phase 7", 40.0, "2024-12-26", "2024-12-27", "Not Started", "Project Manager", "7.3", False, 0.0),
-    ("7.5", 2, "7.0", "Project Closure Report", "Phase 7", 40.0, "2024-12-28", "2024-12-31", "Not Started", "Project Manager", "7.4", True, 0.0)
-]
 
-# Create WBS DataFrame
-df_wbs = spark.createDataFrame(wbs_data, wbs_schema)
+class ResourceRole(Enum):
+    """Resource roles for project team"""
+    PROJECT_MANAGER = "Project Manager"
+    ARCHITECT = "Solution Architect"
+    LEAD_ENGINEER = "Lead Data Engineer"
+    SENIOR_ENGINEER = "Senior Data Engineer"
+    DATA_ENGINEER = "Data Engineer"
+    QA_LEAD = "QA Lead"
+    QA_ENGINEER = "QA Engineer"
+    DEVOPS_ENGINEER = "DevOps Engineer"
+    BA = "Business Analyst"
+    SME = "Subject Matter Expert"
 
-# Resource Allocation Schema
-resource_schema = StructType([
-    StructField("resource_id", StringType(), False),
-    StructField("resource_name", StringType(), False),
-    StructField("role", StringType(), False),
-    StructField("skill_level", StringType(), False),
-    StructField("hourly_rate", DoubleType(), False),
-    StructField("availability_percentage", DoubleType(), False),
-    StructField("start_date", DateType(), False),
-    StructField("end_date", DateType(), False),
-    StructField("location", StringType(), False),
-    StructField("team", StringType(), False)
-])
 
-# Resource Allocation Data
-resource_data = [
-    ("R001", "John Smith", "Project Manager", "Senior", 150.0, 100.0, "2024-01-15", "2024-12-31", "US", "Management"),
-    ("R002", "Sarah Johnson", "Data Architect", "Expert", 175.0, 100.0, "2024-01-15", "2024-12-31", "US", "Architecture"),
-    ("R003", "Michael Chen", "Technical Lead", "Senior", 165.0, 100.0, "2024-01-15", "2024-12-31", "US", "Development"),
-    ("R004", "Emily Davis", "Lead Architect", "Expert", 175.0, 75.0, "2024-01-15", "2024-05-31", "US", "Architecture"),
-    ("R005", "David Wilson", "Senior Developer", "Senior", 140.0, 100.0, "2024-01-15", "2024-12-31", "India", "Development"),
-    ("R006", "Lisa Anderson", "Senior Developer", "Senior", 140.0, 100.0, "2024-04-01", "2024-12-31", "India", "Development"),
-    ("R007", "Robert Taylor", "DevOps Lead", "Senior", 150.0, 100.0, "2024-03-01", "2024-12-31", "US", "Infrastructure"),
-    ("R008", "Jennifer Martinez", "DevOps Engineer", "Mid", 120.0, 100.0, "2024-03-01", "2024-12-31", "India", "Infrastructure"),
-    ("R009", "James Brown", "QA Lead", "Senior", 135.0, 100.0, "2024-04-01", "2024-12-31", "India", "Quality"),
-    ("R010", "Maria Garcia", "QA Engineer", "Mid", 110.0, 100.0, "2024-05-01", "2024-12-31", "India", "Quality"),
-    ("R011", "William Rodriguez", "Data Engineer", "Mid", 125.0, 100.0, "2024-04-01", "2024-12-31", "India", "Development"),
-    ("R012", "Patricia Hernandez", "Data Engineer", "Mid", 125.0, 100.0, "2024-05-01", "2024-12-31", "India", "Development"),
-    ("R013", "Thomas Lee", "Data Engineer", "Junior", 95.0, 100.0, "2024-05-15", "2024-12-31", "India", "Development"),
-    ("R014", "Linda White", "Data Engineer", "Junior", 95.0, 100.0, "2024-05-15", "2024-12-31", "India", "Development"),
-    ("R015", "Christopher Harris", "Data Engineer", "Junior", 95.0, 100.0, "2024-07-01", "2024-12-31", "India", "Development"),
-    ("R016", "Barbara Clark", "Performance Engineer", "Senior", 145.0, 75.0, "2024-05-01", "2024-12-31", "US", "Quality"),
-    ("R017", "Daniel Lewis", "Security Engineer", "Senior", 155.0, 50.0, "2024-03-01", "2024-06-30", "US", "Infrastructure"),
-    ("R018", "Nancy Robinson", "QA Engineer", "Mid", 110.0, 100.0, "2024-07-01", "2024-12-31", "India", "Quality"),
-    ("R019", "Matthew Walker", "Data Engineer", "Mid", 125.0, 100.0, "2024-07-15", "2024-12-31", "India", "Development"),
-    ("R020", "Karen Young", "Data Engineer", "Mid", 125.0, 100.0, "2024-10-01", "2024-12-31", "India", "Development"),
-    ("R021", "Steven Hall", "Technical Writer", "Mid", 100.0, 75.0, "2024-01-15", "2024-12-31", "India", "Documentation"),
-    ("R022", "Betty Allen", "Business Analyst", "Senior", 130.0, 50.0, "2024-01-15", "2024-06-30", "US", "Management"),
-    ("R023", "Paul King", "Data Engineer", "Senior", 140.0, 100.0, "2024-10-01", "2024-12-31", "India", "Development"),
-    ("R024", "Sandra Wright", "Support Engineer", "Mid", 115.0, 100.0, "2024-12-01", "2024-12-31", "India", "Support"),
-    ("R025", "Kevin Scott", "Support Engineer", "Mid", 115.0, 100.0, "2024-12-01", "2024-12-31", "India", "Support")
-]
+class TaskStatus(Enum):
+    """Task status enumeration"""
+    NOT_STARTED = "Not Started"
+    IN_PROGRESS = "In Progress"
+    BLOCKED = "Blocked"
+    COMPLETED = "Completed"
+    CANCELLED = "Cancelled"
 
-# Create Resource DataFrame
-df_resources = spark.createDataFrame(resource_data, resource_schema)
 
-# Dependencies Schema
-dependency_schema = StructType([
-    StructField("dependency_id", StringType(), False),
-    StructField("predecessor_task", StringType(), False),
-    StructField("successor_task", StringType(), False),
-    StructField("dependency_type", StringType(), False),
-    StructField("lag_days", IntegerType(), False)
-])
+class Priority(Enum):
+    """Task priority levels"""
+    CRITICAL = 1
+    HIGH = 2
+    MEDIUM = 3
+    LOW = 4
 
-# Calculate Critical Path
-def calculate_critical_path(wbs_df):
+
+@dataclass
+class Task:
+    """Task definition with dependencies and resource allocation"""
+    task_id: str
+    task_name: str
+    description: str
+    phase: ProjectPhase
+    estimated_hours: float
+    start_date: datetime
+    end_date: datetime
+    dependencies: List[str] = field(default_factory=list)
+    assigned_resources: List[str] = field(default_factory=list)
+    status: TaskStatus = TaskStatus.NOT_STARTED
+    priority: Priority = Priority.MEDIUM
+    actual_hours: float = 0.0
+    completion_percentage: float = 0.0
+    deliverables: List[str] = field(default_factory=list)
+    risks: List[str] = field(default_factory=list)
+
+
+@dataclass
+class Resource:
+    """Resource definition with allocation and capacity"""
+    resource_id: str
+    name: str
+    role: ResourceRole
+    email: str
+    hourly_rate: float
+    availability_percentage: float
+    skills: List[str] = field(default_factory=list)
+    start_date: datetime = None
+    end_date: datetime = None
+    allocated_hours: float = 0.0
+    actual_hours: float = 0.0
+
+
+@dataclass
+class SuccessMetric:
+    """Success metrics and KPIs for project tracking"""
+    metric_id: str
+    metric_name: str
+    description: str
+    target_value: float
+    actual_value: float
+    unit: str
+    measurement_frequency: str
+    baseline_value: float = 0.0
+    threshold_warning: float = 0.0
+    threshold_critical: float = 0.0
+
+
+@dataclass
+class Risk:
+    """Risk definition and mitigation plan"""
+    risk_id: str
+    risk_name: str
+    description: str
+    probability: str  # High, Medium, Low
+    impact: str  # High, Medium, Low
+    mitigation_plan: str
+    contingency_plan: str
+    owner: str
+    status: str
+
+
+class ProjectPlanManager:
     """
-    Calculate and identify critical path tasks
+    Comprehensive project plan manager for Informatica to PySpark migration
+    
+    This class manages the complete project lifecycle including:
+    - Work breakdown structure
+    - Resource allocation and capacity planning
+    - Timeline and dependency management
+    - Success metrics tracking
+    - Risk and issue management
     """
-    window_spec = Window.partitionBy("phase").orderBy("start_date")
     
-    critical_path_df = wbs_df.withColumn(
-        "duration_days",
-        datediff(col("end_date"), col("start_date"))
-    ).withColumn(
-        "float_days",
-        when(col("critical_path"), lit(0)).otherwise(lit(5))
-    ).withColumn(
-        "early_start", col("start_date")
-    ).withColumn(
-        "early_finish", col("end_date")
-    ).withColumn(
-        "late_start",
-        date_add(col("start_date"), col("float_days"))
-    ).withColumn(
-        "late_finish",
-        date_add(col("end_date"), col("float_days"))
-    )
+    def __init__(self, spark: SparkSession, project_name: str, project_id: str):
+        """
+        Initialize project plan manager
+        
+        Args:
+            spark: SparkSession instance
+            project_name: Name of the migration project
+            project_id: Unique project identifier
+        """
+        self.spark = spark
+        self.project_name = project_name
+        self.project_id = project_id
+        self.tasks: List[Task] = []
+        self.resources: List[Resource] = []
+        self.metrics: List[SuccessMetric] = []
+        self.risks: List[Risk] = []
+        
+        logger.info(f"Initialized ProjectPlanManager for {project_name} (ID: {project_id})")
     
-    return critical_path_df
-
-df_critical_path = calculate_critical_path(df_wbs)
-
-# Success Metrics and KPIs Schema
-kpi_schema = StructType([
-    StructField("kpi_id", StringType(), False),
-    StructField("kpi_category", StringType(), False),
-    StructField("kpi_name", StringType(), False),
-    StructField("kpi_description", StringType(), False),
-    StructField("target_value", DoubleType(), False),
-    StructField("baseline_value", DoubleType(), True),
-    StructField("current_value", DoubleType(), True),
-    StructField("unit", StringType(), False),
-    StructField("measurement_frequency", StringType(), False),
-    StructField("owner", StringType(), False)
-])
-
-# Success Metrics Data
-kpi_data = [
-    ("KPI001", "Schedule", "Schedule Performance Index (SPI)", "Ratio of earned value to planned value", 1.0, 1.0, 0.95, "Ratio", "Weekly", "Project Manager"),
-    ("KPI002", "Cost", "Cost Performance Index (CPI)", "Ratio of earned value to actual cost", 1.0, 1.0, 1.02, "Ratio", "Weekly", "Project Manager"),
-    ("KPI003", "Quality", "Defect Density", "Number of defects per 1000 lines of code", 2.0, 5.0, 4.2, "Defects/KLOC", "Sprint", "QA Lead"),
-    ("KPI004", "Quality", "Test Coverage", "Percentage of code covered by automated tests", 85.0, 0.0, 72.0, "Percentage", "Sprint", "QA Lead"),
-    ("KPI005", "Performance", "Job Success Rate", "Percentage of successful PySpark job executions", 99.0, 95.0, 96.5, "Percentage", "Daily", "Technical Lead"),
-    ("KPI006", "Performance", "Average Job Runtime", "Average execution time improvement vs Informatica", -30.0, 0.0, -15.0, "Percentage", "Weekly", "Performance Engineer"),
-    ("KPI007", "Scope", "Migration Progress", "Percentage of mappings migrated", 100.0, 0.0, 18.0, "Percentage", "Weekly", "Technical Lead"),
-    ("KPI008", "Resource", "Team Velocity", "Story points completed per sprint", 80.0, 65.0, 75.0, "Points", "Sprint", "Scrum Master"),
-    ("KPI009", "Quality", "Data Quality Score", "Percentage of data quality checks passed", 99.5, 98.0, 98.5, "Percentage", "Daily", "Data Architect"),
-    ("KPI010", "Cost", "Budget Variance", "Percentage variance from planned budget", 0.0, 0.0, 2.5, "Percentage", "Monthly", "Project Manager"),
-    ("KPI011", "Satisfaction", "Stakeholder Satisfaction", "Stakeholder satisfaction survey score", 4.5, 4.0, 4.2, "Score (1-5)", "Monthly", "Project Manager"),
-    ("KPI012", "Risk", "Risk Mitigation Effectiveness", "Percentage of risks successfully mitigated", 90.0, 0.0, 85.0, "Percentage", "Monthly", "Project Manager"),
-    ("KPI013", "Productivity", "Code Reuse Ratio", "Percentage of code leveraging common frameworks", 70.0, 0.0, 65.0, "Percentage", "Sprint", "Technical Lead"),
-    ("KPI014", "Quality", "Production Incidents", "Number of P1/P2 incidents post-deployment", 2.0, 10.0, 0.0, "Count", "Weekly", "DevOps Lead"),
-    ("KPI015", "Performance", "Resource Utilization", "Percentage of allocated resources actively utilized", 90.0, 0.0, 88.0, "Percentage", "Weekly", "Resource Manager")
-]
-
-# Create KPI DataFrame
-df_kpis = spark.createDataFrame(kpi_data, kpi_schema)
-
-# Risk Register Schema
-risk_schema = StructType([
-    StructField("risk_id", StringType(), False),
-    StructField("risk_category", StringType(), False),
-    StructField("risk_description", StringType(), False),
-    StructField("probability", StringType(), False),
-    StructField("impact", StringType(), False),
-    StructField("risk_score", IntegerType(), False),
-    StructField("mitigation_strategy", StringType(), False),
-    StructField("owner", StringType(), False),
-    StructField("status", StringType(), False)
-])
-
-# Risk Data
-risk_data = [
-    ("RSK001", "Technical", "PySpark skills gap in existing team", "High", "High", 9, "Provide comprehensive training and hire experienced PySpark developers", "Technical Lead", "Active"),
-    ("RSK002", "Schedule", "Underestimation of complex mapping conversion effort", "Medium", "High", 6, "Build buffer time and conduct detailed effort estimation workshops", "Project Manager", "Active"),
-    ("RSK003", "Quality", "Data quality issues in migrated workflows", "Medium", "High", 6, "Implement robust data validation framework and reconciliation processes", "QA Lead", "Active"),
-    ("RSK004", "Technical", "Performance degradation vs Informatica baseline", "Medium", "Medium", 4, "Conduct performance testing early and optimize continuously", "Performance Engineer", "Active"),
-    ("RSK005", "Resource", "Key resource attrition during project", "Low", "High", 3, "Cross-train team members and maintain knowledge repository", "Resource Manager", "Active"),
-    ("RSK006", "Business", "Scope creep and changing requirements", "Medium", "Medium", 4, "Establish strong change control process and governance", "Project Manager", "Active"),
-    ("RSK007", "Technical", "Integration challenges with downstream systems", "Medium", "High", 6, "Early integration testing and API contract validation", "Integration Lead", "Active"),
-    ("RSK008", "Infrastructure", "Cloud infrastructure availability issues", "Low", "Medium", 2, "Design for high availability and implement disaster recovery", "DevOps Lead", "Mitigated"),
-    ("RSK009", "Compliance", "Data governance and security compliance gaps", "Low", "High", 3, "Engage security team early and conduct compliance audits", "Security Engineer", "Mitigated"),
-    ("RSK010", "Business", "Stakeholder resistance to change", "Medium", "Medium", 4, "Robust change management and communication plan", "Change Manager", "Active")
-]
-
-# Create Risk DataFrame
-df_risks = spark.createDataFrame(risk_data, risk_schema)
-
-# Budget Allocation Schema
-budget_schema = StructType([
-    StructField("budget_category", StringType(), False),
-    StructField("budget_subcategory", StringType(), False),
-    StructField("planned_amount", DoubleType(), False),
-    StructField("actual_amount", DoubleType(), False),
-    StructField("committed_amount", DoubleType(), False),
-    StructField("forecast_amount", DoubleType(), False),
-    StructField("variance_amount", DoubleType(), False),
-    StructField("variance_percentage", DoubleType(), False)
-])
-
-# Budget Data
-budget_data = [
-    ("Labor", "Internal FTE", 1200000.0, 180000.0, 400000.0, 1220000.0, -20000.0, -1.67),
-    ("Labor", "External Contractors", 600000.0, 85000.0, 200000.0, 590000.0, 10000.0, 1.67),
-    ("Infrastructure", "Cloud Computing (Databricks)", 350000.0, 42000.0, 120000.0, 345000.0, 5000.0, 1.43),
-    ("Infrastructure", "Storage (Data Lake)", 100000.0, 12000.0, 35000.0, 98000.0, 2000.0, 2.0),
-    ("Software", "Development Tools", 80000.0, 15000.0, 40000.0, 80000.0, 0.0, 0.0),
-    ("Software", "Testing Tools", 50000.0, 8000.0, 25000.0, 50000.0, 0.0, 0.0),
-    ("Software", "Project Management Tools", 30000.0, 5000.0, 15000.0, 30000.0, 0.0, 0.0),
-    ("Training", "PySpark Training Programs", 60000.0, 12000.0, 25000.0, 58000.0, 2000.0, 3.33),
-    ("Training", "Cloud Platform Certifications", 30000.0, 4000.0, 12000.0, 29000.0, 1000.0, 3.33),
-    ("Contingency", "Risk Reserve", 200000.0, 0.0, 0.0, 180000.0, 20000.0, 10.0)
-]
-
-# Create Budget DataFrame
-df_budget = spark.createDataFrame(budget_data, budget_schema)
-
-# Project Analytics and Reporting Functions
-
-def calculate_project_metrics(wbs_df, resources_df, budget_df):
-    """
-    Calculate comprehensive project metrics
-    """
-    # Total Planned Hours
-    total_hours = wbs_df.agg(sum("estimated_hours").alias("total_planned_hours"))
+    def create_work_breakdown_structure(self) -> DataFrame:
+        """
+        Create comprehensive work breakdown structure (WBS) for migration
+        
+        Returns:
+            DataFrame containing complete WBS with all tasks and phases
+        """
+        logger.info("Creating work breakdown structure")
+        
+        # Define comprehensive WBS for Informatica to PySpark migration
+        wbs_data = [
+            # Phase 1: Planning and Assessment
+            {
+                "wbs_id": "1.0", "phase": "Planning", "task_name": "Project Initiation",
+                "description": "Establish project governance and obtain approvals",
+                "estimated_days": 10, "dependencies": [], "resources_required": 3,
+                "deliverables": "Project Charter, Stakeholder Register, Communication Plan"
+            },
+            {
+                "wbs_id": "1.1", "phase": "Planning", "task_name": "Stakeholder Analysis",
+                "description": "Identify and analyze all project stakeholders",
+                "estimated_days": 5, "dependencies": ["1.0"], "resources_required": 2,
+                "deliverables": "Stakeholder Matrix, RACI Chart"
+            },
+            {
+                "wbs_id": "1.2", "phase": "Planning", "task_name": "Resource Planning",
+                "description": "Define resource requirements and allocation",
+                "estimated_days": 5, "dependencies": ["1.0"], "resources_required": 2,
+                "deliverables": "Resource Plan, Capacity Model"
+            },
+            {
+                "wbs_id": "2.0", "phase": "Assessment", "task_name": "Current State Assessment",
+                "description": "Analyze existing Informatica environment",
+                "estimated_days": 15, "dependencies": ["1.0"], "resources_required": 5,
+                "deliverables": "Assessment Report, Inventory Catalog"
+            },
+            {
+                "wbs_id": "2.1", "phase": "Assessment", "task_name": "Workflow Inventory",
+                "description": "Document all Informatica workflows and mappings",
+                "estimated_days": 10, "dependencies": ["2.0"], "resources_required": 4,
+                "deliverables": "Workflow Inventory, Complexity Matrix"
+            },
+            {
+                "wbs_id": "2.2", "phase": "Assessment", "task_name": "Dependency Mapping",
+                "description": "Map dependencies between workflows and systems",
+                "estimated_days": 8, "dependencies": ["2.1"], "resources_required": 3,
+                "deliverables": "Dependency Map, Impact Analysis"
+            },
+            {
+                "wbs_id": "2.3", "phase": "Assessment", "task_name": "Data Profiling",
+                "description": "Profile source and target data structures",
+                "estimated_days": 12, "dependencies": ["2.1"], "resources_required": 4,
+                "deliverables": "Data Profile Report, Quality Assessment"
+            },
+            {
+                "wbs_id": "2.4", "phase": "Assessment", "task_name": "Performance Baseline",
+                "description": "Establish current performance baselines",
+                "estimated_days": 7, "dependencies": ["2.1"], "resources_required": 2,
+                "deliverables": "Performance Baseline Report, KPI Dashboard"
+            },
+            
+            # Phase 2: Design
+            {
+                "wbs_id": "3.0", "phase": "Design", "task_name": "Target Architecture Design",
+                "description": "Design PySpark target architecture",
+                "estimated_days": 15, "dependencies": ["2.0"], "resources_required": 4,
+                "deliverables": "Architecture Blueprint, Design Document"
+            },
+            {
+                "wbs_id": "3.1", "phase": "Design", "task_name": "Migration Pattern Definition",
+                "description": "Define reusable migration patterns",
+                "estimated_days": 10, "dependencies": ["3.0"], "resources_required": 3,
+                "deliverables": "Pattern Library, Transformation Rules"
+            },
+            {
+                "wbs_id": "3.2", "phase": "Design", "task_name": "Data Model Design",
+                "description": "Design target data models and schemas",
+                "estimated_days": 12, "dependencies": ["2.3", "3.0"], "resources_required": 4,
+                "deliverables": "Data Model Diagram, Schema Definitions"
+            },
+            {
+                "wbs_id": "3.3", "phase": "Design", "task_name": "Error Handling Framework",
+                "description": "Design error handling and logging framework",
+                "estimated_days": 8, "dependencies": ["3.0"], "resources_required": 2,
+                "deliverables": "Error Handling Design, Logging Standards"
+            },
+            {
+                "wbs_id": "3.4", "phase": "Design", "task_name": "Testing Strategy",
+                "description": "Define comprehensive testing strategy",
+                "estimated_days": 10, "dependencies": ["3.0"], "resources_required": 3,
+                "deliverables": "Test Strategy, Test Plan Template"
+            },
+            
+            # Phase 3: Development - Wave 1
+            {
+                "wbs_id": "4.0", "phase": "Development", "task_name": "Development Environment Setup",
+                "description": "Setup development and CI/CD environments",
+                "estimated_days": 10, "dependencies": ["3.0"], "resources_required": 3,
+                "deliverables": "Dev Environment, CI/CD Pipeline"
+            },
+            {
+                "wbs_id": "4.1", "phase": "Development", "task_name": "Framework Development",
+                "description": "Build reusable PySpark frameworks",
+                "estimated_days": 20, "dependencies": ["4.0", "3.1"], "resources_required": 5,
+                "deliverables": "Core Framework, Utility Libraries"
+            },
+            {
+                "wbs_id": "4.2", "phase": "Development", "task_name": "Wave 1 Migration - Critical Workflows",
+                "description": "Migrate critical priority workflows",
+                "estimated_days": 30, "dependencies": ["4.1"], "resources_required": 8,
+                "deliverables": "Migrated Workflows, Unit Tests"
+            },
+            {
+                "wbs_id": "4.3", "phase": "Development", "task_name": "Wave 2 Migration - High Priority",
+                "description": "Migrate high priority workflows",
+                "estimated_days": 40, "dependencies": ["4.2"], "resources_required": 8,
+                "deliverables": "Migrated Workflows, Unit Tests"
+            },
+            {
+                "wbs_id": "4.4", "phase": "Development", "task_name": "Wave 3 Migration - Medium Priority",
+                "description": "Migrate medium priority workflows",
+                "estimated_days": 35, "dependencies": ["4.3"], "resources_required": 6,
+                "deliverables": "Migrated Workflows, Unit Tests"
+            },
+            {
+                "wbs_id": "4.5", "phase": "Development", "task_name": "Wave 4 Migration - Low Priority",
+                "description": "Migrate remaining workflows",
+                "estimated_days": 25, "dependencies": ["4.4"], "resources_required": 4,
+                "deliverables": "Migrated Workflows, Unit Tests"
+            },
+            
+            # Phase 4: Testing
+            {
+                "wbs_id": "5.0", "phase": "Testing", "task_name": "Unit Testing",
+                "description": "Execute comprehensive unit tests",
+                "estimated_days": 20, "dependencies": ["4.2"], "resources_required": 4,
+                "deliverables": "Unit Test Results, Coverage Report"
+            },
+            {
+                "wbs_id": "5.1", "phase": "Testing", "task_name": "Integration Testing",
+                "description": "Execute end-to-end integration tests",
+                "estimated_days": 25, "dependencies": ["5.0", "4.5"], "resources_required": 6,
+                "deliverables": "Integration Test Results, Defect Log"
+            },
+            {
+                "wbs_id": "5.2", "phase": "Testing", "task_name": "Performance Testing",
+                "description": "Execute performance and scalability tests",
+                "estimated_days": 15, "dependencies": ["5.1"], "resources_required": 3,
+                "deliverables": "Performance Test Results, Tuning Report"
+            },
+            {
+                "wbs_id": "5.3", "phase": "Testing", "task_name": "Data Reconciliation",
+                "description": "Reconcile data between Informatica and PySpark",
+                "estimated_days": 20, "dependencies": ["5.1"], "resources_required": 5,
+                "deliverables": "Reconciliation Report, Data Quality Metrics"
+            },
+            {
+                "wbs_id": "5.4", "phase": "Testing", "task_name": "User Acceptance Testing",
+                "description": "Conduct UAT with business stakeholders",
+                "estimated_days": 15, "dependencies": ["5.2", "5.3"], "resources_required": 8,
+                "deliverables": "UAT Results, Sign-off Document"
+            },
+            
+            # Phase 5: Deployment
+            {
+                "wbs_id": "6.0", "phase": "Deployment", "task_name": "Production Environment Setup",
+                "description": "Setup production infrastructure",
+                "estimated_days": 10, "dependencies": ["5.4"], "resources_required": 3,
+                "deliverables": "Production Environment, Security Config"
+            },
+            {
+                "wbs_id": "6.1", "phase": "Deployment", "task_name": "Deployment Planning",
+                "description": "Create detailed deployment plan and runbooks",
+                "estimated_days": 8, "dependencies": ["6.0"], "resources_required": 4,
+                "deliverables": "Deployment Plan, Runbooks, Rollback Plan"
+            },
+            {
+                "wbs_id": "6.2", "phase": "Deployment", "task_name": "Pilot Deployment",
+                "description": "Deploy pilot workflows to production",
+                "estimated_days": 5, "dependencies": ["6.1"], "resources_required": 6,
+                "deliverables": "Pilot Deployment Report, Lessons Learned"
+            },
+            {
+                "wbs_id": "6.3", "phase": "Deployment", "task_name": "Phased Production Rollout",
+                "description": "Rollout remaining workflows in phases",
+                "estimated_days": 20, "dependencies": ["6.2"], "resources_required": 8,
+                "deliverables": "Deployment Reports, Production Validation"
+            },
+            {
+                "wbs_id": "6.4", "phase": "Deployment", "task_name": "Parallel Run",
+                "description": "Run both systems in parallel for validation",
+                "estimated_days": 15, "dependencies": ["6.3"], "resources_required": 6,
+                "deliverables": "Parallel Run Report, Cutover Decision"
+            },
+            
+            # Phase 6: Hypercare and Closure
+            {
+                "wbs_id": "7.0", "phase": "Hypercare", "task_name": "Hypercare Support",
+                "description": "Provide intensive post-deployment support",
+                "estimated_days": 30, "dependencies": ["6.4"], "resources_required": 10,
+                "deliverables": "Support Tickets, Stabilization Report"
+            },
+            {
+                "wbs_id": "7.1", "phase": "Hypercare", "task_name": "Performance Tuning",
+                "description": "Optimize production performance",
+                "estimated_days": 15, "dependencies": ["7.0"], "resources_required": 4,
+                "deliverables": "Tuning Report, Performance Metrics"
+            },
+            {
+                "wbs_id": "7.2", "phase": "Hypercare", "task_name": "Knowledge Transfer",
+                "description": "Transfer knowledge to support team",
+                "estimated_days": 10, "dependencies": ["7.0"], "resources_required": 6,
+                "deliverables": "Training Materials, Support Documentation"
+            },
+            {
+                "wbs_id": "8.0", "phase": "Closure", "task_name": "Project Closure",
+                "description": "Complete project closure activities",
+                "estimated_days": 10, "dependencies": ["7.0", "7.1", "7.2"], "resources_required": 3,
+                "deliverables": "Closure Report, Lessons Learned, Final Budget"
+            },
+            {
+                "wbs_id": "8.1", "phase": "Closure", "task_name": "Decommission Informatica",
+                "description": "Decommission legacy Informatica environment",
+                "estimated_days": 15, "dependencies": ["8.0"], "resources_required": 4,
+                "deliverables": "Decommissioning Report, Archive Plan"
+            }
+        ]
+        
+        # Create DataFrame from WBS data
+        wbs_df = self.spark.createDataFrame(wbs_data)
+        
+        # Add calculated columns
+        wbs_df = wbs_df.withColumn("estimated_hours", col("estimated_days") * 8) \
+                       .withColumn("effort_person_days", col("estimated_days") * col("resources_required")) \
+                       .withColumn("project_id", lit(self.project_id)) \
+                       .withColumn("created_timestamp", current_timestamp())
+        
+        logger.info(f"Created WBS with {wbs_df.count()} tasks")
+        return wbs_df
     
-    # Completed Hours
-    completed_hours = wbs_df.filter(col("status") == "Completed") \
-        .agg(sum("estimated_hours").alias("completed_hours"))
+    def calculate_project_timeline(self, wbs_df: DataFrame, start_date: str) -> DataFrame:
+        """
+        Calculate project timeline with dependencies and critical path
+        
+        Args:
+            wbs_df: Work breakdown structure DataFrame
+            start_date: Project start date (YYYY-MM-DD format)
+            
+        Returns:
+            DataFrame with calculated dates and critical path
+        """
+        logger.info(f"Calculating project timeline from start date: {start_date}")
+        
+        # Convert dependencies string to array for processing
+        timeline_df = wbs_df.withColumn(
+            "dependency_array",
+            when(col("dependencies").isNotNull(), col("dependencies"))
+            .otherwise(array())
+        )
+        
+        # Add start date and calculate end dates
+        timeline_df = timeline_df.withColumn("planned_start_date", lit(start_date).cast(DateType())) \
+                                 .withColumn("planned_end_date", 
+                                           date_add(col("planned_start_date"), 
+                                                   col("estimated_days").cast(IntegerType())))
+        
+        # Calculate critical path indicators
+        timeline_df = timeline_df.withColumn(
+            "is_critical_path",
+            when(col("dependencies").isNotNull() & (col("estimated_days") > 10), lit(True))
+            .otherwise(lit(False))
+        )
+        
+        # Add buffer days for risk mitigation (20% buffer)
+        timeline_df = timeline_df.withColumn(
+            "buffer_days",
+            (col("estimated_days") * 0.2).cast(IntegerType())
+        ).withColumn(
+            "buffered_end_date",
+            date_add(col("planned_end_date"), col("buffer_days"))
+        )
+        
+        # Calculate project milestones
+        window_spec = Window.partitionBy("phase").orderBy("wbs_id")
+        timeline_df = timeline_df.withColumn(
+            "is_milestone",
+            when(
+                (row_number().over(window_spec) == 1) |
+                (lead("phase").over(Window.orderBy("wbs_id")) != col("phase")),
+                lit(True)
+            ).otherwise(lit(False))
+        )
+        
+        logger.info("Timeline calculation completed")
+        return timeline_df
     
-    # In Progress Hours
-    in_progress_hours = wbs_df.filter(col("status") == "In Progress") \
-        .agg((sum("estimated_hours") * avg("completion_percentage") / 100).alias("in_progress_hours"))
+    def allocate_resources(self, timeline_df: DataFrame) -> Tuple[DataFrame, DataFrame]:
+        """
+        Allocate resources to tasks and track capacity
+        
+        Args:
+            timeline_df: Timeline DataFrame with task details
+            
+        Returns:
+            Tuple of (resource_allocation_df, capacity_analysis_df)
+        """
+        logger.info("Performing resource allocation")
+        
+        # Define resource pool
+        resource_pool = [
+            {"resource_id": "PM001", "name": "John Smith", "role": "Project Manager", 
+             "hourly_rate": 150, "capacity_hours_per_day": 8, "availability": 1.0},
+            {"resource_id": "ARCH001", "name": "Sarah Johnson", "role": "Solution Architect",
+             "hourly_rate": 175, "capacity_hours_per_day": 8, "availability": 0.75},
+            {"resource_id": "LEAD001", "name": "Mike Chen", "role": "Lead Data Engineer",
+             "hourly_rate": 140, "capacity_hours_per_day": 8, "availability": 1.0},
+            {"resource_id": "SENG001", "name": "Emily Brown", "role": "Senior Data Engineer",
+             "hourly_rate": 120, "capacity_hours_per_day": 8, "availability": 1.0},
+            {"resource_id": "SENG002", "name": "David Lee", "role": "Senior Data Engineer",
+             "hourly_rate": 120, "capacity_hours_per_day": 8, "availability": 1.0},
+            {"resource_id": "ENG001", "name": "Anna Martinez", "role": "Data Engineer",
+             "hourly_rate": 100, "capacity_hours_per_day": 8, "availability": 1.0},
+            {"resource_id": "ENG002", "name": "James Wilson", "role": "Data Engineer",
+             "hourly_rate": 100, "capacity_hours_per_day": 8, "availability": 1.0},
+            {"resource_id": "ENG003", "name": "Lisa Anderson", "role": "Data Engineer",
+             "hourly_rate": 100, "capacity_hours_per_day": 8, "availability": 1.0},
+            {"resource_id": "QLEAD001", "name": "Robert Taylor", "role": "QA Lead",
+             "hourly_rate": 110, "capacity_hours_per_day": 8, "availability": 0.8},
+            {"resource_id": "QA001", "name": "Jennifer White", "role": "QA Engineer",
+             "hourly_rate": 90, "capacity_hours_per_day": 8, "availability": 1.0},
+            {"resource_id": "QA002", "name": "Michael Garcia", "role": "QA Engineer",
+             "hourly_rate": 90, "capacity_hours_per_day": 8, "availability": 1.0},
+            {"resource_id": "DEVOPS001", "name": "Chris Martin", "role": "DevOps Engineer",
+             "hourly_rate": 130, "capacity_hours_per_day": 8, "availability": 0.6},
+            {"resource_id": "BA001", "name": "Patricia Davis", "role": "Business Analyst",
+             "hourly_rate": 105, "capacity_hours_per_day": 8, "availability": 0.8},
+            {"resource_id": "SME001", "name": "Daniel Rodriguez", "role": "Subject Matter Expert",
+             "hourly_rate": 125, "capacity_hours_per_day": 4, "availability": 0.5}
+        ]
+        
+        resources_df = self.spark.createDataFrame(resource_pool)
+        
+        # Calculate resource allocation based on task requirements
+        allocation_df = timeline_df.alias("t").crossJoin(
+            resources_df.alias("r")
+        ).select(
+            col("t.wbs_id"),
+            col("t.task_name"),
+            col("t.phase"),
+            col("t.estimated_hours"),
+            col("t.resources_required"),
+            col("t.planned_start_date"),
+            col("t.planned_end_date"),
+            col("r.resource_id"),
+            col("r.name").alias("resource_name"),
+            col("r.role"),
+            col("r.hourly_rate"),
+            col("r.capacity_hours_per_day"),
+            col("r.availability")
+        )
+        
+        # Allocate hours per resource based on requirements
+        allocation_df = allocation_df.withColumn(
+            "allocated_hours",
+            (col("estimated_hours") / col("resources_required"))
+        ).withColumn(
+            "estimated_cost",
+            col("allocated_hours") * col("hourly_rate")
+        )
+        
+        # Calculate capacity utilization
+        capacity_df = allocation_df.groupBy(
+            "resource_id", "resource_name", "role", "capacity_hours_per_day", "availability"
+        ).agg(
+            _sum("allocated_hours").alias("total_allocated_hours"),
+            _sum("estimated_cost").alias("total_cost"),
+            count("wbs_id").alias("task_count")
+        ).withColumn(
+            "available_hours",
+            col("capacity_hours_per_day") * col("availability") * 220  # ~220 working days per year
+        ).withColumn(
+            "utilization_percentage",
+            (col("total_allocated_hours") / col("available_hours") * 100).cast(DecimalType(5, 2))
+        ).withColumn(
+            "capacity_status",
+            when(col("utilization_percentage") > 100, lit("Overallocated"))
+            .when(col("utilization_percentage") > 85, lit("At Capacity"))
+            .when(col("utilization_percentage") > 70, lit("Well Utilized"))
+            .otherwise(lit("Underutilized"))
+        )
+        
+        logger.info(f"Resource allocation completed for {resources_df.count()} resources")
+        return allocation_df, capacity_df
     
-    # Budget Summary
-    budget_summary = budget_df.agg(
-        sum("planned_amount").alias("total_planned_budget"),
-        sum("actual_amount").alias("total_actual_spend"),
-        sum("forecast_amount").alias("total_forecast"),
-        sum("variance_amount").alias("total_variance")
-    )
-    
-    # Resource Count
-    resource_count = resources_df.select(count("*").alias("total_resources"))
-    
-    # Critical Path Tasks
-    critical_tasks = wbs_df.filter(col("critical_path") == True) \
-        .select(count("*").alias("critical_task_count"))
-    
-    return {
-        "hours": total_hours.union(completed_hours).union(in_progress_hours),
-        "budget": budget_summary,
-        "resources": resource_count,
-        "critical": critical_tasks
-    }
-
-def generate_phase_summary
+    def define_success_metrics(self) -> DataFrame:
+        """
+        Define comprehensive success metrics and KPIs for migration project
+        
+        Returns:
+            DataFrame containing all success metrics and targets
+        """
+        logger.info("Defining success metrics and KPIs")
+        
+        metrics_data = [
+            # Schedule Metrics
+            {
+                "metric_category": "Schedule", "metric_name": "Schedule Variance (SV)",
+                "description": "Difference between planned and actual completion",
+                "target_value": 0.0, "baseline_value": 0.0, "unit": "days",
+                "measurement_frequency": "Weekly", "threshold_warning": 5.0,
+                "threshold_critical": 10.0, "calculation_formula": "Planned_Date - Actual_Date"
+            },
+            {
+                "metric_category": "Schedule", "metric_name": "Schedule Performance Index (SPI)",
+                "description": "Ratio of work performed to work scheduled",
+                "target_value": 1.0, "baseline_value": 1.0, "unit": "ratio",
+                "measurement_frequency": "Weekly", "threshold_warning": 0.9,
+                "threshold_critical": 0.8, "calculation_formula": "EV / PV"
+            },
+            {
+                "metric_category": "Schedule", "metric_name": "On-Time Delivery Rate",
+                "description": "Percentage of tasks completed on schedule",
+                "target_value": 95.0, "baseline_value": 0.0, "unit": "percentage",
+                "measurement_frequency": "Weekly", "threshold_warning": 85.0,
+                "threshold_critical": 75.0, "calculation_formula": "(On_Time_Tasks / Total_Tasks) * 100"
+            },
+            
+            # Cost Metrics
+            {
+                "metric_category": "Cost", "metric_name": "Cost Variance (CV)",
+                "description": "Difference between budgeted and actual cost",
+                "target_value": 0.0, "baseline_value": 0.0, "unit": "USD",
+                "measurement_frequency": "Weekly", "threshold_warning": 50000.0,
+                "threshold_critical": 100000.0, "calculation_formula": "EV - AC"
+            },
+            {
+                "metric_category": "Cost", "metric_name": "Cost Performance Index (CPI)",
+                "description": "Value of work performed vs actual cost",
+                "target_value": 1.0, "baseline_value": 1.0, "unit": "ratio",
+                "measurement_frequency": "Weekly", "threshold_warning": 0.9,
+                "threshold_critical": 0.85, "calculation_formula": "EV / AC"
+            },
+            {
+                "metric_category": "Cost", "metric_name": "Budget Utilization",
+                "description": "Percentage of budget consumed",
+                "target_value": 95.0, "baseline_value": 0.0, "unit": "percentage",
+                "measurement_frequency": "Weekly", "threshold_warning": 105.0,
+                "threshold_critical": 110.0, "calculation_formula": "(Actual_Cost / Budget) * 100"
+            },
+            
+            # Quality Metrics
+            {
+                "metric_category": "Quality", "metric_name": "Defect Density",
+                "description": "Number of defects per workflow migrated",
+                "target_value": 2.0, "baseline_value": 0.0, "unit": "count",
+                "measurement_frequency": "Weekly", "threshold_warning": 5.0,
+                "threshold_critical": 10.0, "calculation_formula": "Total_Defects / Total_Workflows"
+            },
+            {
+                "metric_category": "Quality", "metric_name": "Data Reconciliation Accuracy",
+                "description": "Percentage of records matching between systems",
+                "target_value": 99.99, "baseline_value": 0.0, "unit": "percentage",
+                "measurement_frequency": "Daily", "threshold_warning": 99.9,
+                "threshold_critical": 99.5, "calculation_formula": "(Matching_Records / Total_Records) * 100"
+            },
+            {
+                "metric_category": "Quality", "metric_name": "Test Coverage",
+                "description": "Percentage of code covered by automated tests",
+                "target_value": 85.0, "baseline_value": 0.0, "unit": "percentage",
+                "measurement_frequency": "Daily", "threshold_warning": 75.0,
+                "threshold_critical": 65.
