@@ -1,741 +1,19 @@
 """
-Informatica PowerCenter to PySpark Migration Runbook Generator
-===============================================================
-
-This module generates comprehensive migration documentation, runbooks, and 
-knowledge base materials for Informatica to PySpark migrations.
-
+Migration Runbook and Documentation Generator
+Comprehensive documentation framework for Informatica PowerCenter to PySpark migration
 Author: Data Engineering Team
 Version: 1.0.0
-License: Enterprise
 """
 
 from pyspark.sql import SparkSession
+from pyspark.sql.functions import *
 from pyspark.sql.types import *
 from datetime import datetime
 import json
-import os
-from typing import Dict, List, Any
-import yaml
-
-
-class MigrationRunbookGenerator:
-    """
-    Generates comprehensive migration documentation and runbooks for 
-    Informatica PowerCenter to PySpark migration projects.
-    """
-    
-    def __init__(self, output_base_path: str):
-        """
-        Initialize the runbook generator.
-        
-        Args:
-            output_base_path: Base directory for documentation output
-        """
-        self.output_base_path = output_base_path
-        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Create documentation structure
-        self.doc_structure = {
-            'migration_runbook': f"{output_base_path}/migration_runbook",
-            'coding_standards': f"{output_base_path}/coding_standards",
-            'transformation_mapping': f"{output_base_path}/transformation_mapping",
-            'operational_runbooks': f"{output_base_path}/operational_runbooks",
-            'troubleshooting': f"{output_base_path}/troubleshooting",
-            'monitoring': f"{output_base_path}/monitoring",
-            'training': f"{output_base_path}/training",
-            'knowledge_transfer': f"{output_base_path}/knowledge_transfer"
-        }
-        
-        self._create_directory_structure()
-    
-    def _create_directory_structure(self):
-        """Create the documentation directory structure."""
-        for path in self.doc_structure.values():
-            os.makedirs(path, exist_ok=True)
-    
-    def generate_migration_runbook(self) -> str:
-        """Generate comprehensive migration runbook."""
-        
-        runbook_content = {
-            "title": "Informatica PowerCenter to PySpark Migration Runbook",
-            "version": "1.0.0",
-            "last_updated": datetime.now().isoformat(),
-            
-            "overview": {
-                "purpose": "Guide for migrating Informatica PowerCenter workflows to PySpark",
-                "scope": "End-to-end migration including assessment, conversion, testing, and deployment",
-                "audience": ["Data Engineers", "DevOps Engineers", "QA Analysts", "Business Analysts"]
-            },
-            
-            "migration_phases": {
-                "phase_1_assessment": {
-                    "name": "Discovery and Assessment",
-                    "duration": "2-3 weeks",
-                    "activities": [
-                        {
-                            "task": "Inventory Existing Workflows",
-                            "description": "Catalog all PowerCenter workflows, sessions, and mappings",
-                            "deliverable": "Complete inventory spreadsheet with complexity ratings",
-                            "tools": ["PowerCenter Repository Browser", "Metadata extraction scripts"],
-                            "steps": [
-                                "Connect to PowerCenter repository",
-                                "Export folder structure and object counts",
-                                "Document dependencies and lineage",
-                                "Identify reusable components",
-                                "Calculate complexity scores"
-                            ]
-                        },
-                        {
-                            "task": "Analyze Source to Target Mappings",
-                            "description": "Document all data transformations and business logic",
-                            "deliverable": "Transformation specification document",
-                            "steps": [
-                                "Extract mapping logic from PowerCenter",
-                                "Document transformation rules",
-                                "Identify complex transformations requiring custom code",
-                                "Map PowerCenter transformations to PySpark equivalents"
-                            ]
-                        },
-                        {
-                            "task": "Assess Data Volumes and Performance",
-                            "description": "Analyze current performance metrics and SLAs",
-                            "deliverable": "Performance baseline document",
-                            "steps": [
-                                "Collect workflow execution statistics",
-                                "Document data volumes and growth trends",
-                                "Identify performance bottlenecks",
-                                "Define target performance SLAs"
-                            ]
-                        }
-                    ]
-                },
-                
-                "phase_2_design": {
-                    "name": "Solution Design",
-                    "duration": "2-4 weeks",
-                    "activities": [
-                        {
-                            "task": "Design PySpark Architecture",
-                            "description": "Define target state architecture and patterns",
-                            "deliverable": "Architecture design document",
-                            "components": [
-                                "Data lake structure (Bronze/Silver/Gold layers)",
-                                "Spark cluster configuration",
-                                "Job orchestration framework",
-                                "Error handling and logging strategy",
-                                "Metadata management approach"
-                            ]
-                        },
-                        {
-                            "task": "Create Transformation Framework",
-                            "description": "Build reusable PySpark transformation library",
-                            "deliverable": "Framework code repository",
-                            "components": [
-                                "Common transformation functions",
-                                "Data quality validation framework",
-                                "Configuration management utilities",
-                                "Logging and monitoring framework"
-                            ]
-                        }
-                    ]
-                },
-                
-                "phase_3_development": {
-                    "name": "Code Development and Conversion",
-                    "duration": "8-12 weeks",
-                    "activities": [
-                        {
-                            "task": "Convert PowerCenter Mappings to PySpark",
-                            "description": "Systematic conversion of all workflows",
-                            "approach": "Prioritize by business criticality and complexity",
-                            "steps": [
-                                "Select workflow batch for conversion",
-                                "Extract PowerCenter mapping XML",
-                                "Generate PySpark code using templates",
-                                "Implement business logic transformations",
-                                "Add error handling and logging",
-                                "Create unit tests",
-                                "Peer code review",
-                                "Commit to version control"
-                            ],
-                            "quality_gates": [
-                                "Code adheres to standards",
-                                "Unit test coverage > 80%",
-                                "Peer review completed",
-                                "Static code analysis passed"
-                            ]
-                        },
-                        {
-                            "task": "Implement Job Orchestration",
-                            "description": "Configure workflow scheduling and dependencies",
-                            "tools": ["Apache Airflow", "Azure Data Factory", "AWS Step Functions"],
-                            "steps": [
-                                "Define DAGs/Pipelines",
-                                "Configure job dependencies",
-                                "Set up retry and alerting logic",
-                                "Implement parameter passing",
-                                "Configure scheduling"
-                            ]
-                        }
-                    ]
-                },
-                
-                "phase_4_testing": {
-                    "name": "Testing and Validation",
-                    "duration": "4-6 weeks",
-                    "activities": [
-                        {
-                            "task": "Unit Testing",
-                            "coverage": "Individual transformation functions",
-                            "framework": "pytest",
-                            "success_criteria": ">80% code coverage"
-                        },
-                        {
-                            "task": "Integration Testing",
-                            "coverage": "End-to-end data flows",
-                            "approach": "Compare PowerCenter vs PySpark outputs",
-                            "success_criteria": "100% data reconciliation"
-                        },
-                        {
-                            "task": "Performance Testing",
-                            "coverage": "Load and stress testing",
-                            "success_criteria": "Meet or exceed baseline SLAs"
-                        },
-                        {
-                            "task": "UAT",
-                            "coverage": "Business validation",
-                            "participants": "Business stakeholders",
-                            "success_criteria": "Sign-off on all test cases"
-                        }
-                    ]
-                },
-                
-                "phase_5_deployment": {
-                    "name": "Production Deployment",
-                    "duration": "2-3 weeks",
-                    "activities": [
-                        {
-                            "task": "Pre-Deployment Validation",
-                            "checklist": [
-                                "All tests passed in UAT",
-                                "Performance benchmarks met",
-                                "Runbooks completed and reviewed",
-                                "Support team trained",
-                                "Rollback plan documented",
-                                "Change management approval obtained"
-                            ]
-                        },
-                        {
-                            "task": "Deployment Execution",
-                            "approach": "Phased rollout by workflow groups",
-                            "steps": [
-                                "Deploy to production environment",
-                                "Run parallel PowerCenter and PySpark",
-                                "Validate outputs match",
-                                "Monitor performance metrics",
-                                "Cutover from PowerCenter to PySpark",
-                                "Decommission PowerCenter workflows"
-                            ]
-                        },
-                        {
-                            "task": "Post-Deployment Validation",
-                            "duration": "1-2 weeks",
-                            "activities": [
-                                "Monitor production runs",
-                                "Validate data quality",
-                                "Track performance metrics",
-                                "Address any issues",
-                                "Document lessons learned"
-                            ]
-                        }
-                    ]
-                },
-                
-                "phase_6_hypercare": {
-                    "name": "Hypercare and Support",
-                    "duration": "4 weeks post-deployment",
-                    "activities": [
-                        {
-                            "task": "Intensive Monitoring",
-                            "description": "24/7 monitoring and rapid response",
-                            "sla": "< 15 minutes response time for critical issues"
-                        },
-                        {
-                            "task": "Issue Resolution",
-                            "description": "Quick triage and fix of production issues",
-                            "escalation_matrix": "Defined support tiers"
-                        },
-                        {
-                            "task": "Performance Tuning",
-                            "description": "Optimize based on production patterns",
-                            "focus_areas": ["Query optimization", "Partition tuning", "Resource allocation"]
-                        }
-                    ]
-                }
-            },
-            
-            "roles_responsibilities": {
-                "migration_lead": {
-                    "responsibilities": [
-                        "Overall migration program management",
-                        "Stakeholder communication",
-                        "Risk management",
-                        "Resource allocation",
-                        "Timeline management"
-                    ]
-                },
-                "solution_architect": {
-                    "responsibilities": [
-                        "Design target state architecture",
-                        "Define technical standards",
-                        "Review complex transformations",
-                        "Technology selection",
-                        "Performance optimization strategy"
-                    ]
-                },
-                "lead_developer": {
-                    "responsibilities": [
-                        "Framework development",
-                        "Code review and quality assurance",
-                        "Developer mentoring",
-                        "Technical documentation",
-                        "Complex transformation implementation"
-                    ]
-                },
-                "developers": {
-                    "responsibilities": [
-                        "PowerCenter analysis",
-                        "PySpark code development",
-                        "Unit testing",
-                        "Documentation",
-                        "Code reviews"
-                    ]
-                },
-                "qa_analyst": {
-                    "responsibilities": [
-                        "Test strategy and planning",
-                        "Test case development",
-                        "Test execution",
-                        "Data reconciliation",
-                        "Defect management"
-                    ]
-                },
-                "devops_engineer": {
-                    "responsibilities": [
-                        "Environment setup",
-                        "CI/CD pipeline development",
-                        "Deployment automation",
-                        "Infrastructure management",
-                        "Monitoring setup"
-                    ]
-                }
-            },
-            
-            "risk_mitigation": {
-                "common_risks": [
-                    {
-                        "risk": "Data quality issues discovered post-migration",
-                        "impact": "High",
-                        "probability": "Medium",
-                        "mitigation": [
-                            "Comprehensive data profiling in assessment phase",
-                            "Automated data reconciliation testing",
-                            "Implement data quality checks in PySpark jobs",
-                            "Run parallel processing during transition"
-                        ]
-                    },
-                    {
-                        "risk": "Performance degradation vs PowerCenter",
-                        "impact": "High",
-                        "probability": "Medium",
-                        "mitigation": [
-                            "Early performance testing",
-                            "Proper partitioning and caching strategy",
-                            "Right-sizing Spark clusters",
-                            "Query optimization and tuning",
-                            "Performance baseline documentation"
-                        ]
-                    },
-                    {
-                        "risk": "Complex transformation logic difficult to replicate",
-                        "impact": "Medium",
-                        "probability": "High",
-                        "mitigation": [
-                            "Detailed mapping documentation",
-                            "Engage business SMEs for validation",
-                            "Prototype complex transformations early",
-                            "Create reusable transformation library"
-                        ]
-                    },
-                    {
-                        "risk": "Resource availability and skill gaps",
-                        "impact": "High",
-                        "probability": "Medium",
-                        "mitigation": [
-                            "Early team training on PySpark",
-                            "Hire experienced Spark developers",
-                            "Develop comprehensive documentation",
-                            "Implement pair programming",
-                            "Create knowledge sharing sessions"
-                        ]
-                    }
-                ]
-            }
-        }
-        
-        output_file = f"{self.doc_structure['migration_runbook']}/migration_runbook_{self.timestamp}.yaml"
-        with open(output_file, 'w') as f:
-            yaml.dump(runbook_content, f, default_flow_style=False, sort_keys=False)
-        
-        return output_file
-    
-    def generate_coding_standards(self) -> str:
-        """Generate PySpark coding standards and best practices."""
-        
-        standards_content = {
-            "title": "PySpark Coding Standards and Best Practices",
-            "version": "1.0.0",
-            "last_updated": datetime.now().isoformat(),
-            
-            "general_principles": {
-                "readability": "Code should be self-documenting and easy to understand",
-                "maintainability": "Write modular, reusable code with clear separation of concerns",
-                "performance": "Optimize for distributed processing and minimize data shuffling",
-                "reliability": "Implement comprehensive error handling and logging",
-                "testability": "Design code to be easily unit testable"
-            },
-            
-            "naming_conventions": {
-                "variables": {
-                    "style": "snake_case",
-                    "examples": {
-                        "good": ["customer_df", "total_amount", "is_active"],
-                        "bad": ["customerDf", "TotalAmount", "isActive"]
-                    },
-                    "rules": [
-                        "Use descriptive names that indicate purpose",
-                        "Avoid single letter names except for iterators",
-                        "Boolean variables should start with is_, has_, can_",
-                        "DataFrame variables should end with _df"
-                    ]
-                },
-                "functions": {
-                    "style": "snake_case",
-                    "examples": {
-                        "good": ["transform_customer_data", "calculate_total", "validate_input"],
-                        "bad": ["TransformCustomerData", "calculateTotal", "ValidateInput"]
-                    },
-                    "rules": [
-                        "Use verb phrases that describe action",
-                        "Keep names concise but descriptive",
-                        "Avoid abbreviations unless widely understood"
-                    ]
-                },
-                "classes": {
-                    "style": "PascalCase",
-                    "examples": {
-                        "good": ["CustomerTransformer", "DataValidator", "ConfigManager"],
-                        "bad": ["customer_transformer", "datavalidator", "config_Manager"]
-                    }
-                },
-                "constants": {
-                    "style": "UPPER_SNAKE_CASE",
-                    "examples": {
-                        "good": ["MAX_RETRY_COUNT", "DEFAULT_PARTITION_SIZE", "CONFIG_FILE_PATH"],
-                        "bad": ["max_retry_count", "DefaultPartitionSize", "configFilePath"]
-                    }
-                }
-            },
-            
-            "code_structure": {
-                "file_organization": {
-                    "header": [
-                        "Module docstring with description",
-                        "Author and version information",
-                        "Import statements (standard library, third-party, local)"
-                    ],
-                    "sections": [
-                        "Constants and configuration",
-                        "Helper functions",
-                        "Main transformation functions",
-                        "Entry point (if applicable)"
-                    ],
-                    "example": '''"""
-Customer Data Transformation Module
-
-This module processes customer data from raw to curated layer,
-applying business rules and data quality validations.
-
-Author: Data Engineering Team
-Version: 1.0.0
-"""
-
-# Standard library imports
-from datetime import datetime
 import logging
-
-# Third-party imports
-from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import col, when, lit
-from pyspark.sql.types import StructType, StructField, StringType
-
-# Local imports
-from common.utils import get_spark_session, log_dataframe_info
-from common.validators import validate_schema
-
-# Constants
-DEFAULT_DATE_FORMAT = "yyyy-MM-dd"
-MAX_STRING_LENGTH = 255
-
-# Configuration
-logger = logging.getLogger(__name__)
-'''
-                },
-                
-                "function_structure": {
-                    "components": [
-                        "Function signature with type hints",
-                        "Comprehensive docstring",
-                        "Input validation",
-                        "Main logic",
-                        "Return statement"
-                    ],
-                    "example": '''def transform_customer_data(
-    input_df: DataFrame,
-    business_date: str,
-    config: Dict[str, Any]
-) -> DataFrame:
-    """
-    Transform customer data by applying business rules and enrichments.
-    
-    This function performs the following transformations:
-    1. Standardizes customer names
-    2. Validates email formats
-    3. Calculates customer age
-    4. Applies business status rules
-    
-    Args:
-        input_df: Input DataFrame containing raw customer data
-        business_date: Processing date in YYYY-MM-DD format
-        config: Configuration dictionary with transformation parameters
-    
-    Returns:
-        Transformed DataFrame with standardized customer data
-    
-    Raises:
-        ValueError: If business_date format is invalid
-        TypeError: If input_df is not a DataFrame
-    
-    Example:
-        >>> config = {"default_country": "US", "min_age": 18}
-        >>> result_df = transform_customer_data(raw_df, "2024-01-01", config)
-    """
-    # Input validation
-    if not isinstance(input_df, DataFrame):
-        raise TypeError("input_df must be a PySpark DataFrame")
-    
-    # Main transformation logic
-    transformed_df = (
-        input_df
-        .withColumn("customer_name", upper(trim(col("customer_name"))))
-        .withColumn("is_valid_email", col("email").rlike(r"^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$"))
-        .withColumn("processing_date", lit(business_date))
-    )
-    
-    return transformed_df
-'''
-                }
-            },
-            
-            "pyspark_best_practices": {
-                "dataframe_operations": {
-                    "practices": [
-                        {
-                            "practice": "Use DataFrame API over RDD API",
-                            "reason": "Better optimization by Catalyst optimizer",
-                            "good_example": "df.filter(col('age') > 18).select('name', 'age')",
-                            "bad_example": "df.rdd.filter(lambda x: x['age'] > 18).map(lambda x: (x['name'], x['age'])).toDF()"
-                        },
-                        {
-                            "practice": "Chain transformations efficiently",
-                            "reason": "Improves readability and allows for optimization",
-                            "good_example": '''result_df = (
-    input_df
-    .filter(col("status") == "active")
-    .withColumn("full_name", concat(col("first_name"), lit(" "), col("last_name")))
-    .select("customer_id", "full_name", "email")
-)''',
-                            "bad_example": '''df1 = input_df.filter(col("status") == "active")
-df2 = df1.withColumn("full_name", concat(col("first_name"), lit(" "), col("last_name")))
-result_df = df2.select("customer_id", "full_name", "email")'''
-                        },
-                        {
-                            "practice": "Avoid unnecessary actions",
-                            "reason": "Actions trigger job execution; minimize for performance",
-                            "good_example": "# Only call .count() or .show() when needed for debugging",
-                            "bad_example": "df.count()  # Called multiple times unnecessarily"
-                        },
-                        {
-                            "practice": "Use appropriate join types",
-                            "reason": "Choose the right join strategy for performance",
-                            "good_example": "large_df.join(broadcast(small_df), 'key', 'left')",
-                            "bad_example": "large_df.join(large_df2, 'key')  # No broadcast hint for small table"
-                        }
-                    ]
-                },
-                
-                "performance_optimization": {
-                    "techniques": [
-                        {
-                            "technique": "Partitioning",
-                            "description": "Distribute data across cluster nodes efficiently",
-                            "example": '''# Repartition for better parallelism
-df = df.repartition(100, "customer_id")
-
-# Coalesce to reduce partitions after filtering
-filtered_df = df.filter(col("status") == "active").coalesce(10)'''
-                        },
-                        {
-                            "technique": "Caching",
-                            "description": "Cache DataFrames that are reused multiple times",
-                            "example": '''# Cache DataFrame used multiple times
-base_df = input_df.filter(col("date") >= "2024-01-01").cache()
-
-result1 = base_df.groupBy("region").count()
-result2 = base_df.groupBy("product").sum("amount")
-
-# Unpersist when no longer needed
-base_df.unpersist()'''
-                        },
-                        {
-                            "technique": "Broadcast Joins",
-                            "description": "Use broadcast for small dimension tables",
-                            "example": '''from pyspark.sql.functions import broadcast
-
-# Broadcast small lookup table
-result = fact_df.join(
-    broadcast(dimension_df),
-    "dimension_key",
-    "left"
-)'''
-                        },
-                        {
-                            "technique": "Predicate Pushdown",
-                            "description": "Filter data as early as possible",
-                            "example": '''# Good: Filter before join
-filtered_df = input_df.filter(col("status") == "active")
-result = filtered_df.join(other_df, "key")
-
-# Bad: Filter after join
-joined_df = input_df.join(other_df, "key")
-result = joined_df.filter(col("status") == "active")'''
-                        },
-                        {
-                            "technique": "Column Pruning",
-                            "description": "Select only required columns early",
-                            "example": '''# Good: Select columns early
-selected_df = input_df.select("id", "name", "amount")
-result = selected_df.groupBy("name").sum("amount")
-
-# Bad: Carry all columns through transformations
-result = input_df.groupBy("name").sum("amount")'''
-                        }
-                    ]
-                },
-                
-                "data_quality": {
-                    "practices": [
-                        {
-                            "practice": "Schema Validation",
-                            "description": "Validate input data schema",
-                            "example": '''def validate_schema(df: DataFrame, expected_schema: StructType) -> bool:
-    """Validate that DataFrame matches expected schema."""
-    return df.schema == expected_schema
-
-# Usage
-if not validate_schema(input_df, expected_customer_schema):
-    raise ValueError("Input schema does not match expected schema")'''
-                        },
-                        {
-                            "practice": "Null Handling",
-                            "description": "Explicitly handle null values",
-                            "example": '''# Handle nulls appropriately
-result_df = (
-    input_df
-    .withColumn("email", coalesce(col("email"), lit("unknown@example.com")))
-    .withColumn("age", when(col("age").isNull(), lit(0)).otherwise(col("age")))
-)'''
-                        },
-                        {
-                            "practice": "Data Validation",
-                            "description": "Add data quality checks",
-                            "example": '''# Add validation columns
-validated_df = (
-    input_df
-    .withColumn("is_valid_email", col("email").rlike(r"^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$"))
-    .withColumn("is_valid_age", col("age").between(0, 120))
-)
-
-# Filter or flag invalid records
-valid_df = validated_df.filter(col("is_valid_email") & col("is_valid_age"))
-invalid_df = validated_df.filter(~(col("is_valid_email") & col("is_valid_age")))'''
-                        }
-                    ]
-                },
-                
-                "error_handling": {
-                    "practices": [
-                        {
-                            "practice": "Try-Except Blocks",
-                            "description": "Handle exceptions appropriately",
-                            "example": '''def safe_transform(df: DataFrame) -> DataFrame:
-    """Apply transformation with error handling."""
-    try:
-        result_df = df.transform(complex_transformation)
-        logger.info(f"Transformation completed successfully. Record count: {result_df.count()}")
-        return result_df
-    except AnalysisException as e:
-        logger.error(f"Analysis error during transformation: {str(e)}")
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error during transformation: {str(e)}")
-        raise'''
-                        },
-                        {
-                            "practice": "Data Validation Errors",
-                            "description": "Validate and handle bad data",
-                            "example": '''def process_with_error_handling(df: DataFrame, error_path: str) -> DataFrame:
-    """Process data and write errors to separate location."""
-    
-    # Add validation columns
-    validated_df = df.withColumn(
-        "has_errors",
-        when(col("customer_id").isNull(), True)
-        .when(col("amount") < 0, True)
-        .otherwise(False)
-    )
-    
-    # Separate valid and invalid records
-    valid_df = validated_df.filter(~col("has_errors")).drop("has_errors")
-    error_df = validated_df.filter(col("has_errors"))
-    
-    # Write errors to error path
-    if error_df.count() > 0:
-        error_df.write.mode("append").parquet(error_path)
-        logger.warning(f"Found {error_df.count()} error records")
-    
-    return valid_df'''
-                        }
-                    ]
-                },
-                
-                "logging": {
-                    "practices": [
-                        {
-                            "practice": "Use Python Logging Module",
-                            "description": "Structured logging with appropriate levels",
-                            "example": '''import logging
+from typing import Dict, List, Any
+from pathlib import Path
+import yaml
 
 # Configure logging
 logging.basicConfig(
@@ -744,132 +22,826 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Log at appropriate levels
-def process_data(df: DataFrame) -> DataFrame:
-    logger.info("Starting data processing")
-    logger.debug(f"Input schema: {df.schema}")
+
+class MigrationDocumentationGenerator:
+    """
+    Generates comprehensive migration documentation and runbooks
+    for Informatica PowerCenter to PySpark migration
+    """
     
-    try:
-        result_df = df.transform(apply_transformations)
-        logger.info(f"Processing completed. Output records: {result_df.count()}")
-        return result_df
-    except Exception as e:
-        logger.error(f"Error during processing: {str(e)}", exc_info=True)
-        raise'''
+    def __init__(self, output_base_path: str):
+        """
+        Initialize documentation generator
+        
+        Args:
+            output_base_path: Base directory for documentation output
+        """
+        self.output_base_path = Path(output_base_path)
+        self.output_base_path.mkdir(parents=True, exist_ok=True)
+        
+        # Create documentation structure
+        self.docs_structure = {
+            'runbooks': self.output_base_path / 'runbooks',
+            'standards': self.output_base_path / 'coding_standards',
+            'mappings': self.output_base_path / 'transformation_mappings',
+            'operations': self.output_base_path / 'operational_procedures',
+            'troubleshooting': self.output_base_path / 'troubleshooting',
+            'monitoring': self.output_base_path / 'monitoring',
+            'training': self.output_base_path / 'training_materials',
+            'knowledge_transfer': self.output_base_path / 'knowledge_transfer'
+        }
+        
+        for path in self.docs_structure.values():
+            path.mkdir(parents=True, exist_ok=True)
+    
+    def generate_migration_runbook(self) -> Dict[str, Any]:
+        """Generate comprehensive migration runbook"""
+        
+        runbook = {
+            "title": "Informatica PowerCenter to PySpark Migration Runbook",
+            "version": "1.0.0",
+            "last_updated": datetime.now().isoformat(),
+            "sections": {
+                "1_overview": {
+                    "title": "Migration Overview",
+                    "content": {
+                        "purpose": "Guide for migrating ETL workflows from Informatica PowerCenter to PySpark",
+                        "scope": "All ETL jobs, workflows, and data pipelines",
+                        "timeline": "Phased migration approach with parallel runs",
+                        "stakeholders": ["Data Engineering", "Data Analytics", "Business Intelligence", "Operations"]
+                    }
+                },
+                "2_prerequisites": {
+                    "title": "Prerequisites and Setup",
+                    "steps": [
+                        {
+                            "step": "1",
+                            "task": "Environment Setup",
+                            "details": [
+                                "Install Spark 3.x cluster",
+                                "Configure AWS S3/ADLS for data storage",
+                                "Setup metadata repository (PostgreSQL/MySQL)",
+                                "Configure job orchestration (Airflow/Databricks)",
+                                "Install monitoring tools (Grafana/Prometheus)"
+                            ]
                         },
                         {
-                            "practice": "Log Key Metrics",
-                            "description": "Track processing metrics",
-                            "example": '''def log_dataframe_metrics(df: DataFrame, stage: str):
-    """Log key DataFrame metrics."""
-    record_count = df.count()
-    partition_count = df.rdd.getNumPartitions()
-    
-    logger.info(f"{stage} - Record count: {record_count}")
-    logger.info(f"{stage} - Partition count: {partition_count}")
-    logger.info(f"{stage} - Schema: {df.schema.simpleString()}")'''
+                            "step": "2",
+                            "task": "Access and Permissions",
+                            "details": [
+                                "Source system database credentials",
+                                "Target system access permissions",
+                                "Cloud storage IAM roles",
+                                "Repository access credentials",
+                                "Monitoring dashboard access"
+                            ]
+                        },
+                        {
+                            "step": "3",
+                            "task": "Code Repository Setup",
+                            "details": [
+                                "Create Git repository structure",
+                                "Setup CI/CD pipelines",
+                                "Configure code review process",
+                                "Setup branch protection rules",
+                                "Configure automated testing"
+                            ]
+                        }
+                    ]
+                },
+                "3_migration_phases": {
+                    "title": "Migration Execution Phases",
+                    "phases": [
+                        {
+                            "phase": "1",
+                            "name": "Discovery and Assessment",
+                            "duration": "2-4 weeks",
+                            "activities": [
+                                "Inventory all PowerCenter objects",
+                                "Analyze dependencies and data lineage",
+                                "Identify complex transformations",
+                                "Assess data volumes and performance",
+                                "Document business rules and logic"
+                            ],
+                            "deliverables": [
+                                "Source inventory spreadsheet",
+                                "Dependency matrix",
+                                "Complexity assessment report",
+                                "Migration wave plan"
+                            ]
+                        },
+                        {
+                            "phase": "2",
+                            "name": "Design and Development",
+                            "duration": "8-12 weeks",
+                            "activities": [
+                                "Design PySpark job architecture",
+                                "Develop transformation logic",
+                                "Implement data quality checks",
+                                "Create unit tests",
+                                "Build reusable frameworks"
+                            ],
+                            "deliverables": [
+                                "Technical design documents",
+                                "PySpark code modules",
+                                "Unit test suites",
+                                "Configuration files"
+                            ]
+                        },
+                        {
+                            "phase": "3",
+                            "name": "Testing and Validation",
+                            "duration": "4-6 weeks",
+                            "activities": [
+                                "Execute unit tests",
+                                "Perform integration testing",
+                                "Conduct data reconciliation",
+                                "Run performance testing",
+                                "Execute UAT with business users"
+                            ],
+                            "deliverables": [
+                                "Test results documentation",
+                                "Reconciliation reports",
+                                "Performance benchmarks",
+                                "UAT sign-off"
+                            ]
+                        },
+                        {
+                            "phase": "4",
+                            "name": "Parallel Run",
+                            "duration": "2-4 weeks",
+                            "activities": [
+                                "Run old and new systems in parallel",
+                                "Compare outputs and metrics",
+                                "Monitor system performance",
+                                "Validate data quality",
+                                "Document discrepancies"
+                            ],
+                            "deliverables": [
+                                "Parallel run reports",
+                                "Issue log and resolutions",
+                                "Performance comparison",
+                                "Go-live approval"
+                            ]
+                        },
+                        {
+                            "phase": "5",
+                            "name": "Cutover and Decommission",
+                            "duration": "1-2 weeks",
+                            "activities": [
+                                "Execute cutover plan",
+                                "Deactivate PowerCenter jobs",
+                                "Monitor new system stability",
+                                "Provide hypercare support",
+                                "Archive old system artifacts"
+                            ],
+                            "deliverables": [
+                                "Cutover checklist completed",
+                                "Incident log",
+                                "Lessons learned document",
+                                "System handover"
+                            ]
+                        }
+                    ]
+                },
+                "4_migration_checklist": {
+                    "title": "Pre-Migration Checklist",
+                    "categories": [
+                        {
+                            "category": "Source Analysis",
+                            "items": [
+                                {"item": "Extract PowerCenter XML metadata", "status": "Required"},
+                                {"item": "Document source-to-target mappings", "status": "Required"},
+                                {"item": "Identify lookup tables and reference data", "status": "Required"},
+                                {"item": "Document parameter files and variables", "status": "Required"},
+                                {"item": "Analyze workflow dependencies", "status": "Required"}
+                            ]
+                        },
+                        {
+                            "category": "Development Environment",
+                            "items": [
+                                {"item": "Spark cluster configured and tested", "status": "Required"},
+                                {"item": "Development IDE setup complete", "status": "Required"},
+                                {"item": "Database connections validated", "status": "Required"},
+                                {"item": "Code repository initialized", "status": "Required"},
+                                {"item": "CI/CD pipeline configured", "status": "Required"}
+                            ]
+                        },
+                        {
+                            "category": "Data Validation",
+                            "items": [
+                                {"item": "Reconciliation framework developed", "status": "Required"},
+                                {"item": "Row count validation scripts", "status": "Required"},
+                                {"item": "Column-level comparison tools", "status": "Required"},
+                                {"item": "Data quality check framework", "status": "Required"},
+                                {"item": "Null and duplicate checks", "status": "Required"}
+                            ]
+                        }
+                    ]
+                },
+                "5_rollback_procedures": {
+                    "title": "Rollback and Contingency Plans",
+                    "scenarios": [
+                        {
+                            "scenario": "Critical Data Quality Issue",
+                            "trigger": "Data reconciliation fails beyond threshold (>1% variance)",
+                            "actions": [
+                                "Stop PySpark jobs immediately",
+                                "Reactivate PowerCenter workflows",
+                                "Notify stakeholders and management",
+                                "Document root cause analysis",
+                                "Schedule remediation and retry"
+                            ],
+                            "decision_makers": ["Data Engineering Lead", "Data Architecture Manager"]
+                        },
+                        {
+                            "scenario": "Performance Degradation",
+                            "trigger": "Jobs exceed SLA by >50%",
+                            "actions": [
+                                "Review Spark job configurations",
+                                "Analyze resource utilization",
+                                "Implement performance optimizations",
+                                "Consider reverting if unresolvable",
+                                "Escalate to Spark expertise team"
+                            ],
+                            "decision_makers": ["Technical Lead", "Operations Manager"]
+                        },
+                        {
+                            "scenario": "System Outage",
+                            "trigger": "Spark cluster unavailable or infrastructure failure",
+                            "actions": [
+                                "Activate PowerCenter backup system",
+                                "Execute manual recovery procedures",
+                                "Coordinate with infrastructure team",
+                                "Communicate with downstream consumers",
+                                "Document incident timeline"
+                            ],
+                            "decision_makers": ["Incident Commander", "Operations Manager"]
                         }
                     ]
                 }
-            },
-            
-            "documentation_standards": {
-                "docstrings": {
-                    "format": "Google Style or NumPy Style",
-                    "required_sections": [
-                        "Brief description",
-                        "Detailed description (if needed)",
-                        "Args section with parameter descriptions",
-                        "Returns section with return value description",
-                        "Raises section with exception descriptions",
-                        "Example section with usage examples"
-                    ],
-                    "example": '''def aggregate_customer_metrics(
-    transactions_df: DataFrame,
-    start_date: str,
-    end_date: str,
-    metric_types: List[str]
-) -> DataFrame:
-    """
-    Aggregate customer transaction metrics for a date range.
+            }
+        }
+        
+        output_file = self.docs_structure['runbooks'] / 'migration_runbook.json'
+        with open(output_file, 'w') as f:
+            json.dump(runbook, f, indent=2)
+        
+        logger.info(f"Migration runbook generated: {output_file}")
+        return runbook
     
-    This function calculates various customer metrics including transaction
-    count, total amount, and average transaction value. Metrics are filtered
-    by the specified date range and metric types.
+    def generate_coding_standards(self) -> Dict[str, Any]:
+        """Generate PySpark coding standards and best practices"""
+        
+        standards = {
+            "title": "PySpark Coding Standards and Best Practices",
+            "version": "1.0.0",
+            "sections": {
+                "1_naming_conventions": {
+                    "title": "Naming Conventions",
+                    "rules": {
+                        "modules": {
+                            "convention": "snake_case",
+                            "examples": ["customer_transform.py", "data_quality_checks.py"],
+                            "pattern": "^[a-z][a-z0-9_]*\\.py$"
+                        },
+                        "classes": {
+                            "convention": "PascalCase",
+                            "examples": ["DataQualityValidator", "ETLJobExecutor"],
+                            "pattern": "^[A-Z][a-zA-Z0-9]*$"
+                        },
+                        "functions": {
+                            "convention": "snake_case",
+                            "examples": ["calculate_total_amount", "validate_data_quality"],
+                            "pattern": "^[a-z][a-z0-9_]*$"
+                        },
+                        "variables": {
+                            "convention": "snake_case",
+                            "examples": ["customer_df", "transaction_count", "max_date"],
+                            "pattern": "^[a-z][a-z0-9_]*$"
+                        },
+                        "constants": {
+                            "convention": "UPPER_SNAKE_CASE",
+                            "examples": ["MAX_RETRY_COUNT", "DEFAULT_PARTITION_SIZE"],
+                            "pattern": "^[A-Z][A-Z0-9_]*$"
+                        },
+                        "dataframes": {
+                            "convention": "descriptive_name_df",
+                            "examples": ["customer_master_df", "sales_transaction_df"],
+                            "suffix": "_df"
+                        }
+                    }
+                },
+                "2_code_structure": {
+                    "title": "Code Organization",
+                    "standards": {
+                        "file_organization": {
+                            "max_lines_per_file": 500,
+                            "sections": [
+                                "Imports (standard library, third-party, local)",
+                                "Constants and configuration",
+                                "Helper functions",
+                                "Main business logic",
+                                "Entry point (if __name__ == '__main__')"
+                            ]
+                        },
+                        "function_design": {
+                            "max_lines_per_function": 50,
+                            "max_parameters": 5,
+                            "single_responsibility": "Each function should do one thing well",
+                            "return_types": "Always specify return type hints"
+                        },
+                        "class_design": {
+                            "max_methods": 15,
+                            "cohesion": "Related methods should be grouped together",
+                            "encapsulation": "Use private methods (_method_name) for internal logic"
+                        }
+                    }
+                },
+                "3_documentation": {
+                    "title": "Documentation Standards",
+                    "requirements": {
+                        "module_docstring": {
+                            "required": True,
+                            "format": "Google style",
+                            "elements": ["Description", "Author", "Date", "Version"]
+                        },
+                        "function_docstring": {
+                            "required": True,
+                            "format": "Google style",
+                            "elements": ["Description", "Args", "Returns", "Raises", "Example"]
+                        },
+                        "inline_comments": {
+                            "when": "For complex logic or non-obvious code",
+                            "style": "Explain WHY, not WHAT",
+                            "max_line_length": 100
+                        }
+                    },
+                    "example": '''
+def transform_customer_data(customer_df: DataFrame, 
+                           reference_df: DataFrame) -> DataFrame:
+    """
+    Transform customer data by applying business rules and enrichment.
     
     Args:
-        transactions_df: DataFrame containing transaction records with columns:
-            - customer_id (string): Unique customer identifier
-            - transaction_date (date): Date of transaction
-            - amount (decimal): Transaction amount
-            - transaction_type (string): Type of transaction
-        start_date: Start date for metric calculation (format: YYYY-MM-DD)
-        end_date: End date for metric calculation (format: YYYY-MM-DD)
-        metric_types: List of metric types to calculate. Valid values:
-            ["count", "sum", "avg", "min", "max"]
+        customer_df: Source customer DataFrame with raw data
+        reference_df: Reference data for lookup and enrichment
     
     Returns:
-        DataFrame with aggregated metrics containing columns:
-        - customer_id: Unique customer identifier
-        - metric_type: Type of metric calculated
-        - metric_value: Calculated metric value
-        - calculation_date: Date of calculation
+        DataFrame: Transformed customer data with all business rules applied
     
     Raises:
-        ValueError: If start_date is after end_date
-        ValueError: If metric_types contains invalid values
-        TypeError: If transactions_df is not a DataFrame
+        ValueError: If required columns are missing
+        DataQualityException: If data quality checks fail
     
     Example:
-        >>> transactions = spark.read.parquet("/data/transactions")
-        >>> metrics = aggregate_customer_metrics(
-        ...     transactions,
-        ...     "2024-01-01",
-        ...     "2024-12-31",
-        ...     ["count", "sum", "avg"]
-        ... )
-        >>> metrics.show()
-        +-----------+-----------+------------+-----------------+
-        |customer_id|metric_type|metric_value|calculation_date|
-        +-----------+-----------+------------+-----------------+
-        |CUST001    |count      |45.0        |2024-01-01      |
-        |CUST001    |sum        |12500.75    |2024-01-01      |
-        +-----------+-----------+------------+-----------------+
-    
-    Note:
-        This function caches the input DataFrame if it will be reused
-        for multiple metric calculations. Ensure to unpersist when done.
+        >>> result_df = transform_customer_data(source_df, ref_df)
+        >>> result_df.count()
+        10000
     """
     # Implementation here
-    pass'''
+    pass
+'''
                 },
-                
-                "inline_comments": {
+                "4_performance_optimization": {
+                    "title": "Performance Best Practices",
                     "guidelines": [
-                        "Explain WHY, not WHAT (code should be self-explanatory)",
-                        "Keep comments concise and up-to-date",
-                        "Use comments for complex business logic",
-                        "Document assumptions and limitations"
-                    ],
-                    "examples": {
-                        "good": [
-                            "# Use broadcast join because lookup table < 100MB",
-                            "# Apply business rule: exclude cancelled orders from last 7 days",
-                            "# Coalesce to 10 partitions to avoid small files"
+                        {
+                            "topic": "DataFrame Operations",
+                            "rules": [
+                                "Use DataFrame API over RDD when possible",
+                                "Avoid collect() on large datasets",
+                                "Use persist() for DataFrames used multiple times",
+                                "Prefer filter() early in transformation chain",
+                                "Use broadcast joins for small lookup tables (<100MB)"
+                            ],
+                            "example": '''
+# Good: Filter early, broadcast small table
+filtered_df = large_df.filter(col("status") == "active")
+result_df = filtered_df.join(broadcast(small_lookup_df), "id")
+
+# Bad: Collect large dataset, late filtering
+data_list = large_df.collect()  # Avoid this!
+result_df = large_df.join(small_df, "id").filter(col("status") == "active")
+'''
+                        },
+                        {
+                            "topic": "Partitioning",
+                            "rules": [
+                                "Partition data based on query patterns",
+                                "Use repartition() for increasing partitions",
+                                "Use coalesce() for decreasing partitions",
+                                "Aim for 128MB-256MB per partition",
+                                "Avoid skewed partitions"
+                            ],
+                            "example": '''
+# Good: Proper partitioning strategy
+df = df.repartition(100, "customer_id")
+df.write.partitionBy("transaction_date").parquet(output_path)
+
+# Bad: Single partition or excessive partitions
+df = df.coalesce(1)  # Avoid single partition for large data
+df = df.repartition(10000)  # Too many small partitions
+'''
+                        },
+                        {
+                            "topic": "Caching Strategy",
+                            "rules": [
+                                "Cache DataFrames used in multiple actions",
+                                "Use appropriate storage level (MEMORY_AND_DISK)",
+                                "Unpersist when no longer needed",
+                                "Monitor cache memory usage"
+                            ],
+                            "example": '''
+# Good: Strategic caching
+customer_df = spark.read.parquet(source_path)
+customer_df.persist(StorageLevel.MEMORY_AND_DISK)
+
+# Use multiple times
+result1 = customer_df.filter(col("status") == "active").count()
+result2 = customer_df.groupBy("region").count()
+
+# Clean up
+customer_df.unpersist()
+'''
+                        }
+                    ]
+                },
+                "5_error_handling": {
+                    "title": "Error Handling Standards",
+                    "patterns": [
+                        {
+                            "pattern": "Try-Except Blocks",
+                            "usage": "Wrap external calls and risky operations",
+                            "example": '''
+try:
+    df = spark.read.jdbc(url=jdbc_url, table=table_name, properties=props)
+    logger.info(f"Successfully read {df.count()} records from {table_name}")
+except Exception as e:
+    logger.error(f"Failed to read from {table_name}: {str(e)}")
+    raise DataSourceException(f"Database read failed: {str(e)}")
+'''
+                        },
+                        {
+                            "pattern": "Custom Exceptions",
+                            "usage": "Create domain-specific exceptions",
+                            "example": '''
+class DataQualityException(Exception):
+    """Raised when data quality checks fail"""
+    pass
+
+class TransformationException(Exception):
+    """Raised when transformation logic fails"""
+    pass
+
+def validate_data(df: DataFrame) -> None:
+    null_count = df.filter(col("customer_id").isNull()).count()
+    if null_count > 0:
+        raise DataQualityException(f"Found {null_count} null customer IDs")
+'''
+                        },
+                        {
+                            "pattern": "Graceful Degradation",
+                            "usage": "Handle failures with fallback logic",
+                            "example": '''
+def enrich_with_reference_data(df: DataFrame) -> DataFrame:
+    try:
+        reference_df = load_reference_data()
+        return df.join(reference_df, "customer_id", "left")
+    except Exception as e:
+        logger.warning(f"Reference data unavailable: {e}. Continuing without enrichment.")
+        return df  # Return original DataFrame
+'''
+                        }
+                    ]
+                },
+                "6_testing_standards": {
+                    "title": "Testing Requirements",
+                    "levels": {
+                        "unit_tests": {
+                            "coverage_target": "80%",
+                            "framework": "pytest",
+                            "requirements": [
+                                "Test each function independently",
+                                "Use sample data for tests",
+                                "Mock external dependencies",
+                                "Test edge cases and error conditions"
+                            ],
+                            "example": '''
+import pytest
+from pyspark.sql import SparkSession
+from transforms import calculate_total_amount
+
+@pytest.fixture(scope="module")
+def spark():
+    return SparkSession.builder.master("local[2]").getOrCreate()
+
+def test_calculate_total_amount(spark):
+    # Arrange
+    data = [(1, 100.0, 2), (2, 50.0, 3)]
+    df = spark.createDataFrame(data, ["id", "price", "quantity"])
+    
+    # Act
+    result_df = calculate_total_amount(df)
+    
+    # Assert
+    results = result_df.collect()
+    assert results[0]["total_amount"] == 200.0
+    assert results[1]["total_amount"] == 150.0
+'''
+                        },
+                        "integration_tests": {
+                            "scope": "End-to-end workflow testing",
+                            "requirements": [
+                                "Test with realistic data volumes",
+                                "Validate data transformations",
+                                "Check data quality rules",
+                                "Verify output schema"
+                            ]
+                        },
+                        "data_validation": {
+                            "checks": [
+                                "Row count reconciliation",
+                                "Column-level aggregation comparison",
+                                "Null value validation",
+                                "Duplicate detection",
+                                "Schema validation"
+                            ]
+                        }
+                    }
+                },
+                "7_configuration_management": {
+                    "title": "Configuration Standards",
+                    "approach": {
+                        "format": "YAML or JSON",
+                        "storage": "Version controlled repository",
+                        "environment_specific": "Separate configs for DEV/QA/PROD",
+                        "secrets": "Use vault or parameter store, never hardcode"
+                    },
+                    "example": '''
+# config/prod_config.yaml
+job:
+  name: customer_etl_job
+  description: Extract and transform customer data
+  
+spark:
+  app_name: customer_etl
+  executor_memory: 8g
+  executor_cores: 4
+  driver_memory: 4g
+  shuffle_partitions: 200
+  
+sources:
+  customer_db:
+    type: jdbc
+    url: jdbc:postgresql://prod-db.company.com:5432/customer_db
+    driver: org.postgresql.Driver
+    table: customers
+    
+targets:
+  customer_output:
+    type: parquet
+    path: s3://prod-bucket/customer/data
+    mode: overwrite
+    partition_by: ["region", "load_date"]
+    
+data_quality:
+  null_check_columns: ["customer_id", "email", "created_date"]
+  duplicate_check_keys: ["customer_id"]
+  row_count_threshold: 0.05
+'''
+                },
+                "8_logging_standards": {
+                    "title": "Logging Best Practices",
+                    "requirements": {
+                        "log_levels": {
+                            "DEBUG": "Detailed diagnostic information",
+                            "INFO": "General informational messages",
+                            "WARNING": "Warning messages for potentially harmful situations",
+                            "ERROR": "Error events that might still allow continued execution",
+                            "CRITICAL": "Severe errors causing premature termination"
+                        },
+                        "log_content": [
+                            "Timestamp",
+                            "Log level",
+                            "Component/module name",
+                            "Message",
+                            "Contextual information (record counts, processing time)"
                         ],
-                        "bad": [
-                            "# Loop through rows",
-                            "# Add column",
-                            "# Filter DataFrame"
-                        ]
+                        "example": '''
+import logging
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+def process_data(df: DataFrame) -> DataFrame:
+    start_time = datetime.now()
+    input_count = df.count()
+    logger.info(f"Starting data processing. Input records: {input_count}")
+    
+    try:
+        # Transformation logic
+        result_df = df.filter(col("status") == "active") \\
+                      .withColumn("processed_date", current_date())
+        
+        output_count = result_df.count()
+        duration = (datetime.now() - start_time).total_seconds()
+        
+        logger.info(f"Processing completed. Output records: {output_count}. "
+                   f"Duration: {duration:.2f}s")
+        return result_df
+        
+    except Exception as e:
+        logger.error(f"Processing failed after {(datetime.now() - start_time).total_seconds():.2f}s: {str(e)}")
+        raise
+'''
                     }
                 }
-            },
-            
-            "testing_standards": {
-                "unit_tests": {
-                    "framework": "pytest",
-                    "coverage_target": "80%",
-                    "structure": '''import pytest
-from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType
+            }
+        }
+        
+        output_file = self.docs_structure['standards'] / 'pyspark_coding_standards.json'
+        with open(output_file, 'w') as f:
+            json.dump(standards, f, indent=2)
+        
+        logger.info(f"Coding standards generated: {output_file}")
+        return standards
+    
+    def generate_transformation_mapping_guide(self) -> Dict[str, Any]:
+        """Generate PowerCenter to PySpark transformation mapping guide"""
+        
+        mapping_guide = {
+            "title": "PowerCenter to PySpark Transformation Mapping Guide",
+            "version": "1.0.0",
+            "transformations": {
+                "source_qualifier": {
+                    "powercenter": "Source Qualifier Transformation",
+                    "pyspark_equivalent": "spark.read with filter",
+                    "description": "Read from source and apply basic filtering",
+                    "mapping": {
+                        "sql_override": "Use SQL in spark.read.jdbc or custom query",
+                        "source_filter": "Use DataFrame.filter() method",
+                        "distinct": "Use DataFrame.distinct() or dropDuplicates()"
+                    },
+                    "example": '''
+# PowerCenter: Source Qualifier with SQL Override
+# SELECT * FROM customers WHERE status = 'Active'
+
+# PySpark Equivalent
+customer_df = spark.read.jdbc(
+    url=jdbc_url,
+    table="(SELECT * FROM customers WHERE status = 'Active') as sq",
+    properties=connection_props
+)
+
+# Or using DataFrame API
+customer_df = spark.read.jdbc(url=jdbc_url, table="customers", properties=props) \\
+    .filter(col("status") == "Active")
+'''
+                },
+                "expression": {
+                    "powercenter": "Expression Transformation",
+                    "pyspark_equivalent": "withColumn() and select()",
+                    "description": "Derive new columns using expressions",
+                    "mapping": {
+                        "variable_ports": "Define intermediate columns using withColumn()",
+                        "output_ports": "Final select() with required columns",
+                        "functions": "Use pyspark.sql.functions"
+                    },
+                    "example": '''
+# PowerCenter: Expression with multiple ports
+# Variable: v_full_name = first_name || ' ' || last_name
+# Output: o_full_name = v_full_name
+
+# PySpark Equivalent
+from pyspark.sql.functions import concat_ws, upper, when
+
+result_df = customer_df \\
+    .withColumn("full_name", concat_ws(" ", col("first_name"), col("last_name"))) \\
+    .withColumn("full_name_upper", upper(col("full_name"))) \\
+    .withColumn("name_length", length(col("full_name"))) \\
+    .withColumn("is_vip", when(col("total_spend") > 10000, "Y").otherwise("N"))
+'''
+                },
+                "filter": {
+                    "powercenter": "Filter Transformation",
+                    "pyspark_equivalent": "filter() or where()",
+                    "description": "Filter rows based on conditions",
+                    "mapping": {
+                        "filter_condition": "Boolean expression in filter()",
+                        "multiple_conditions": "Combine with & (and) or | (or)"
+                    },
+                    "example": '''
+# PowerCenter: Filter Transformation
+# Filter Condition: status = 'Active' AND total_amount > 1000
+
+# PySpark Equivalent
+active_customers_df = customer_df \\
+    .filter((col("status") == "Active") & (col("total_amount") > 1000))
+
+# Alternative syntax
+active_customers_df = customer_df \\
+    .where("status = 'Active' AND total_amount > 1000")
+'''
+                },
+                "aggregator": {
+                    "powercenter": "Aggregator Transformation",
+                    "pyspark_equivalent": "groupBy() with agg()",
+                    "description": "Perform aggregations on grouped data",
+                    "mapping": {
+                        "group_by_ports": "groupBy() columns",
+                        "aggregate_expressions": "agg() with aggregate functions",
+                        "sorted_input": "Use orderBy() if needed"
+                    },
+                    "example": '''
+# PowerCenter: Aggregator
+# Group By: customer_id, region
+# Aggregates: SUM(amount), COUNT(*), MAX(transaction_date)
+
+# PySpark Equivalent
+from pyspark.sql.functions import sum, count, max, avg
+
+aggregated_df = transaction_df \\
+    .groupBy("customer_id", "region") \\
+    .agg(
+        sum("amount").alias("total_amount"),
+        count("*").alias("transaction_count"),
+        max("transaction_date").alias("last_transaction_date"),
+        avg("amount").alias("avg_amount")
+    )
+'''
+                },
+                "joiner": {
+                    "powercenter": "Joiner Transformation",
+                    "pyspark_equivalent": "join()",
+                    "description": "Join two sources based on join condition",
+                    "mapping": {
+                        "master_source": "Right side of join (broadcast if small)",
+                        "detail_source": "Left side of join",
+                        "join_condition": "Join key(s)",
+                        "join_type": "inner, left, right, full, left_anti, left_semi"
+                    },
+                    "example": '''
+# PowerCenter: Joiner (Normal Join, Master: customers, Detail: orders)
+# Join Condition: customers.customer_id = orders.customer_id
+
+# PySpark Equivalent - Regular Join
+result_df = orders_df.join(customers_df, "customer_id", "inner")
+
+# PySpark - Broadcast Join (for small dimension tables)
+from pyspark.sql.functions import broadcast
+
+result_df = orders_df.join(broadcast(customers_df), "customer_id", "left")
+
+# Complex join condition
+result_df = orders_df.alias("o").join(
+    customers_df.alias("c"),
+    (col("o.customer_id") == col("c.customer_id")) & 
+    (col("o.order_date") >= col("c.start_date")),
+    "inner"
+)
+'''
+                },
+                "lookup": {
+                    "powercenter": "Lookup Transformation",
+                    "pyspark_equivalent": "join() with left join",
+                    "description": "Lookup reference data",
+                    "mapping": {
+                        "connected_lookup": "left join with broadcast",
+                        "unconnected_lookup": "UDF with broadcast variable",
+                        "cache": "Use broadcast() for small lookups"
+                    },
+                    "example": '''
+# PowerCenter: Connected Lookup
+# Lookup Table: product_master
+# Lookup Condition: product_id
+# Return: product_name, category
+
+# PySpark Equivalent
+lookup_df = spark.read.table("product_master") \\
+    .select("product_id", "product_name", "category")
+
+result_df = transaction_df.join(
+    broadcast(lookup_df),
+    "product_id",
+    "left"
+)
+
+# Handle multiple return values on match
+result_df = result_df \\
+    .withColumn("product_name", coalesce(col("product_name"), lit("Unknown"))) \\
+    .withColumn("category", coalesce(col("category"), lit("Uncategorized")))
+'''
+                },
+                "router": {
+                    "powercenter": "Router Transformation",
+                    "pyspark_equivalent": "Multiple filter() operations",
+                    "description": "Route rows to different targets based on conditions",
+                    "mapping": {
+                        "router_groups": "Separate DataFrames with different filters",
+                        "default_group": "Final DataFrame with negated conditions"
+                    },
+                    "example": '''
+# PowerCenter: Router with 3 groups
+# Group1: amount > 10000 (high_value)
+# Group2
