@@ -1,28 +1,22 @@
 """
-PySpark Target Architecture and Migration Strategy
-===================================================
-
-This module defines the complete target architecture, migration strategy,
-and implementation framework for migrating from Informatica to PySpark.
-
-Author: Data Engineering Team
-Version: 1.0.0
-Date: 2024
+PySpark Target Architecture and Migration Strategy - Design Document as Code
+===============================================================================
+This module serves as executable documentation for the target PySpark architecture,
+migration strategy, and implementation standards for Informatica to PySpark migration.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional
 from enum import Enum
 from datetime import datetime
-import json
 
 
-# ============================================================================
-# ARCHITECTURE ENUMERATIONS AND CONSTANTS
-# ============================================================================
+# ==============================================================================
+# ARCHITECTURE COMPONENTS
+# ==============================================================================
 
 class OrchestrationType(Enum):
-    """Orchestration platform options"""
+    """Supported orchestration platforms"""
     AIRFLOW = "Apache Airflow"
     DATABRICKS_WORKFLOWS = "Databricks Workflows"
     AWS_STEP_FUNCTIONS = "AWS Step Functions"
@@ -30,858 +24,949 @@ class OrchestrationType(Enum):
 
 
 class StorageType(Enum):
-    """Data storage architecture types"""
-    DATA_LAKE = "Data Lake (S3/ADLS/GCS)"
-    LAKEHOUSE = "Lakehouse (Delta Lake)"
-    DATA_WAREHOUSE = "Data Warehouse (Snowflake/Redshift)"
-    HYBRID = "Hybrid Architecture"
+    """Data storage layer types"""
+    S3 = "AWS S3"
+    ADLS = "Azure Data Lake Storage"
+    GCS = "Google Cloud Storage"
+    DELTA_LAKE = "Delta Lake"
+    ICEBERG = "Apache Iceberg"
 
 
 class MigrationApproach(Enum):
-    """Migration strategy types"""
+    """Migration strategies"""
     LIFT_AND_SHIFT = "Lift and Shift"
-    REFACTOR = "Refactor and Optimize"
+    REFACTOR = "Refactor"
     HYBRID = "Hybrid Approach"
-    INCREMENTAL = "Incremental Migration"
 
-
-class DeploymentPhase(Enum):
-    """Migration deployment phases"""
-    PHASE_1_POC = "Phase 1: Proof of Concept"
-    PHASE_2_PILOT = "Phase 2: Pilot (Low Risk Jobs)"
-    PHASE_3_CORE = "Phase 3: Core Business Jobs"
-    PHASE_4_CRITICAL = "Phase 4: Critical Production Jobs"
-    PHASE_5_OPTIMIZATION = "Phase 5: Optimization & Decommission"
-
-
-# ============================================================================
-# PYSPARK JOB ARCHITECTURE
-# ============================================================================
 
 @dataclass
 class PySparkJobArchitecture:
     """
-    Defines the standard PySpark job structure and architecture patterns
+    Standard PySpark Job Architecture Design
+    
+    Directory Structure:
+    project_root/
+    ├── config/
+    │   ├── dev.yaml
+    │   ├── uat.yaml
+    │   └── prod.yaml
+    ├── jobs/
+    │   ├── bronze_ingestion/
+    │   ├── silver_transformation/
+    │   └── gold_aggregation/
+    ├── common/
+    │   ├── utils/
+    │   ├── transformations/
+    │   └── validators/
+    ├── tests/
+    │   ├── unit/
+    │   ├── integration/
+    │   └── e2e/
+    ├── orchestration/
+    │   ├── airflow_dags/
+    │   └── databricks_workflows/
+    └── monitoring/
+        ├── logging/
+        └── metrics/
     """
     
-    # Job Structure
-    standard_structure: Dict[str, str] = field(default_factory=lambda: {
-        "project_root": "pyspark_jobs/",
-        "src": "Source code directory",
-        "config": "Configuration files (YAML/JSON)",
-        "tests": "Unit and integration tests",
-        "utils": "Common utilities and helpers",
-        "schemas": "Data schemas and contracts",
-        "resources": "SQL scripts, templates",
-        "logs": "Application logs",
-        "docs": "Documentation"
-    })
+    job_name: str
+    job_type: str  # bronze/silver/gold
+    layers: List[str] = field(default_factory=lambda: ["ingestion", "transformation", "validation", "publishing"])
     
-    # Standard Job Components
-    job_components: List[str] = field(default_factory=lambda: [
-        "job_config.py - Configuration management",
-        "job_main.py - Entry point and orchestration",
-        "data_reader.py - Data ingestion layer",
-        "transformations.py - Business logic",
-        "data_writer.py - Data persistence layer",
-        "data_quality.py - Quality checks and validation",
-        "logging_framework.py - Structured logging",
-        "error_handler.py - Exception handling",
-        "utils.py - Common utilities"
-    ])
-    
-    # Design Patterns
-    design_patterns: Dict[str, str] = field(default_factory=lambda: {
-        "Factory Pattern": "Dynamic reader/writer instantiation",
-        "Strategy Pattern": "Pluggable transformation logic",
-        "Chain of Responsibility": "Data quality checks pipeline",
-        "Template Method": "Standard job execution flow",
-        "Singleton": "Spark session management",
-        "Decorator": "Logging and monitoring wrappers"
-    })
-    
-    # Code Organization Principles
-    principles: List[str] = field(default_factory=lambda: [
-        "Separation of Concerns - distinct layers for I/O, transformation, validation",
-        "DRY (Don't Repeat Yourself) - reusable components and utilities",
-        "SOLID Principles - maintainable and extensible code",
-        "Configuration over Code - externalized configurations",
-        "Testability - mockable dependencies and unit testable functions",
-        "Idempotency - safe to rerun without side effects"
-    ])
-
-
-@dataclass
-class SparkSessionConfiguration:
-    """
-    Standard Spark session configuration for different workload types
-    """
-    
-    batch_processing_config: Dict[str, Any] = field(default_factory=lambda: {
-        "spark.app.name": "batch_processing_job",
-        "spark.sql.adaptive.enabled": "true",
-        "spark.sql.adaptive.coalescePartitions.enabled": "true",
-        "spark.sql.adaptive.skewJoin.enabled": "true",
-        "spark.sql.sources.partitionOverwriteMode": "dynamic",
-        "spark.sql.parquet.compression.codec": "snappy",
-        "spark.sql.shuffle.partitions": "200",
-        "spark.executor.memory": "8g",
-        "spark.executor.cores": "4",
-        "spark.driver.memory": "4g",
-        "spark.dynamicAllocation.enabled": "true",
-        "spark.dynamicAllocation.minExecutors": "2",
-        "spark.dynamicAllocation.maxExecutors": "10"
-    })
-    
-    streaming_config: Dict[str, Any] = field(default_factory=lambda: {
-        "spark.app.name": "streaming_job",
-        "spark.sql.streaming.checkpointLocation": "/checkpoints",
-        "spark.sql.streaming.schemaInference": "false",
-        "spark.streaming.stopGracefullyOnShutdown": "true",
-        "spark.sql.adaptive.enabled": "false",
-        "spark.executor.memory": "16g",
-        "spark.executor.cores": "8"
-    })
-    
-    data_quality_config: Dict[str, Any] = field(default_factory=lambda: {
-        "spark.app.name": "data_quality_job",
-        "spark.sql.adaptive.enabled": "true",
-        "spark.executor.memory": "4g",
-        "spark.dynamicAllocation.enabled": "true"
-    })
-
-
-# ============================================================================
-# ORCHESTRATION ARCHITECTURE
-# ============================================================================
-
-@dataclass
-class OrchestrationArchitecture:
-    """
-    Orchestration platform selection and configuration
-    """
-    
-    selected_platform: OrchestrationType = OrchestrationType.AIRFLOW
-    
-    selection_criteria: Dict[str, str] = field(default_factory=lambda: {
-        "Cost": "Open source, no licensing fees",
-        "Scalability": "Horizontal scaling with Kubernetes",
-        "Flexibility": "Python-based DAG definitions",
-        "Community": "Large community and ecosystem",
-        "Integration": "Native integration with cloud platforms",
-        "Monitoring": "Built-in UI and monitoring capabilities",
-        "Scheduling": "Advanced scheduling and dependency management"
-    })
-    
-    # Airflow Architecture Components
-    airflow_components: Dict[str, str] = field(default_factory=lambda: {
-        "Webserver": "UI and API server",
-        "Scheduler": "DAG scheduling and task orchestration",
-        "Executor": "CeleryExecutor for distributed processing",
-        "Workers": "Task execution nodes (Kubernetes pods)",
-        "Message Broker": "Redis/RabbitMQ for task queuing",
-        "Metadata DB": "PostgreSQL for state management",
-        "Result Backend": "Redis for task results"
-    })
-    
-    # Standard DAG Structure
-    dag_structure: Dict[str, str] = field(default_factory=lambda: {
-        "dag_definition": "DAG configuration and schedule",
-        "task_groups": "Logical grouping of related tasks",
-        "sensors": "Wait for external dependencies",
-        "spark_submit_operators": "PySpark job execution",
-        "branch_operators": "Conditional logic",
-        "data_quality_checks": "Validation tasks",
-        "notification_tasks": "Success/failure alerts"
-    })
-    
-    # Deployment Configuration
-    deployment_config: Dict[str, Any] = field(default_factory=lambda: {
-        "environment": "Kubernetes",
-        "namespace": "airflow-production",
-        "executor": "KubernetesExecutor",
-        "pod_template": "spark-job-pod-template.yaml",
-        "dag_location": "s3://airflow-dags/",
-        "log_location": "s3://airflow-logs/",
-        "connections": {
-            "spark_default": "spark://spark-master:7077",
-            "aws_default": "AWS IAM Role",
-            "databricks_default": "Token-based auth"
+    @staticmethod
+    def get_standard_structure():
+        return {
+            "config_management": "YAML-based configuration with environment overrides",
+            "code_organization": "Modular design with reusable components",
+            "naming_convention": "snake_case for files, PascalCase for classes",
+            "package_structure": "Layered architecture (bronze/silver/gold)",
         }
-    })
 
 
-# ============================================================================
-# DATA STORAGE STRATEGY
-# ============================================================================
+@dataclass
+class InfrastructureRequirements:
+    """Infrastructure specifications for PySpark deployment"""
+    
+    compute_platform: str  # Databricks, EMR, Synapse, etc.
+    cluster_config: Dict[str, any] = field(default_factory=dict)
+    
+    def get_compute_specifications(self):
+        return {
+            "development": {
+                "driver_node": "4 cores, 16GB RAM",
+                "worker_nodes": "2-8 autoscaling, 4 cores, 16GB RAM each",
+                "spark_version": "3.5.0",
+                "python_version": "3.10"
+            },
+            "production": {
+                "driver_node": "8 cores, 32GB RAM",
+                "worker_nodes": "4-20 autoscaling, 8 cores, 32GB RAM each",
+                "spark_version": "3.5.0",
+                "python_version": "3.10",
+                "autoscaling_enabled": True,
+                "spot_instances": "80% spot, 20% on-demand"
+            }
+        }
+    
+    def get_network_requirements(self):
+        return {
+            "vpc_configuration": "Private subnet with NAT gateway",
+            "security_groups": "Restricted ingress/egress rules",
+            "vpc_peering": "Required for database connectivity",
+            "endpoints": ["S3", "DynamoDB", "Secrets Manager"]
+        }
+
 
 @dataclass
 class DataStorageStrategy:
-    """
-    Data lake and storage architecture design
-    """
+    """Data lake architecture and storage design"""
     
-    selected_architecture: StorageType = StorageType.LAKEHOUSE
+    storage_platform: StorageType
+    table_format: str  # Delta, Iceberg, Parquet
     
-    # Lakehouse Architecture (Delta Lake)
-    lakehouse_layers: Dict[str, Dict[str, str]] = field(default_factory=lambda: {
-        "bronze_layer": {
-            "purpose": "Raw data ingestion (as-is from source)",
-            "format": "Delta Lake",
-            "partition_strategy": "ingestion_date",
-            "retention": "2 years",
-            "access_pattern": "Write-heavy, append-only",
-            "path": "s3://datalake/bronze/"
-        },
-        "silver_layer": {
-            "purpose": "Cleaned and validated data",
-            "format": "Delta Lake",
-            "partition_strategy": "business_date, source_system",
-            "retention": "5 years",
-            "access_pattern": "Balanced read/write",
-            "path": "s3://datalake/silver/",
-            "features": ["Schema enforcement", "ACID transactions", "Time travel"]
-        },
-        "gold_layer": {
-            "purpose": "Business-ready aggregated data",
-            "format": "Delta Lake / Parquet",
-            "partition_strategy": "business_entity, date",
-            "retention": "7 years",
-            "access_pattern": "Read-heavy",
-            "path": "s3://datalake/gold/",
-            "features": ["Optimized for analytics", "Indexed", "Pre-aggregated"]
+    def get_medallion_architecture(self):
+        return {
+            "bronze": {
+                "description": "Raw ingestion layer",
+                "path": "s3://datalake/bronze/",
+                "format": "delta",
+                "partitioning": "ingestion_date",
+                "retention": "2 years",
+                "compression": "snappy"
+            },
+            "silver": {
+                "description": "Cleansed and conformed layer",
+                "path": "s3://datalake/silver/",
+                "format": "delta",
+                "partitioning": "business_date, source_system",
+                "retention": "5 years",
+                "compression": "snappy",
+                "optimizations": ["z-order", "bloom filters"]
+            },
+            "gold": {
+                "description": "Business-ready aggregated layer",
+                "path": "s3://datalake/gold/",
+                "format": "delta",
+                "partitioning": "report_date",
+                "retention": "7 years",
+                "compression": "snappy",
+                "optimizations": ["z-order", "data skipping"]
+            }
         }
-    })
     
-    # File Format Strategy
-    file_format_strategy: Dict[str, str] = field(default_factory=lambda: {
-        "transactional_data": "Delta Lake (ACID compliance)",
-        "archival_data": "Parquet (storage efficiency)",
-        "streaming_data": "Delta Lake (real-time updates)",
-        "external_exchange": "Parquet/CSV (compatibility)",
-        "compression": "Snappy (balance of speed/compression)"
-    })
-    
-    # Partitioning Strategy
-    partitioning_guidelines: Dict[str, List[str]] = field(default_factory=lambda: {
-        "time_based_partitioning": [
-            "Use year/month/day for daily loads",
-            "Avoid over-partitioning (target 1GB+ per partition)",
-            "Consider ingestion_timestamp for incremental loads"
-        ],
-        "business_partitioning": [
-            "Partition by frequently filtered dimensions",
-            "Limit to 2-3 partition columns",
-            "Consider data skew and cardinality"
-        ],
-        "performance_tuning": [
-            "Z-order for multi-dimensional filtering",
-            "Optimize files regularly (bin-packing)",
-            "Vacuum old versions per retention policy"
-        ]
-    })
-    
-    # Data Catalog
-    data_catalog_config: Dict[str, Any] = field(default_factory=lambda: {
-        "catalog_type": "AWS Glue / Hive Metastore / Unity Catalog",
-        "schema_registry": "Centralized schema management",
-        "data_lineage": "Track data flow and transformations",
-        "access_control": "Column/row-level security",
-        "metadata_tags": ["PII", "Confidential", "Source System", "Owner"]
-    })
+    def get_governance_controls(self):
+        return {
+            "access_control": "Lake Formation / Unity Catalog",
+            "data_catalog": "AWS Glue / Databricks Unity Catalog",
+            "encryption": {
+                "at_rest": "AES-256",
+                "in_transit": "TLS 1.2+"
+            },
+            "audit_logging": "CloudTrail / Audit Logs",
+            "data_quality": "Great Expectations / Deequ"
+        }
 
-
-# ============================================================================
-# LOGGING AND MONITORING FRAMEWORK
-# ============================================================================
 
 @dataclass
 class LoggingMonitoringFramework:
-    """
-    Comprehensive logging and monitoring architecture
-    """
+    """Centralized logging and monitoring design"""
     
-    # Logging Architecture
-    logging_layers: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
-        "application_logging": {
-            "framework": "Python logging + structlog",
-            "format": "JSON structured logs",
-            "levels": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-            "destination": "CloudWatch / ELK Stack / Splunk",
-            "retention": "90 days"
-        },
-        "spark_logging": {
-            "driver_logs": "Captured by orchestrator",
-            "executor_logs": "Aggregated to central location",
-            "event_logs": "Spark History Server",
-            "metrics": "Spark metrics system"
-        },
-        "audit_logging": {
-            "access_logs": "Data access patterns",
-            "change_logs": "Schema and config changes",
-            "compliance_logs": "Regulatory requirements",
-            "retention": "7 years"
+    logging_platform: str
+    monitoring_platform: str
+    
+    def get_logging_configuration(self):
+        return {
+            "log_levels": {
+                "development": "DEBUG",
+                "uat": "INFO",
+                "production": "WARN"
+            },
+            "log_destinations": [
+                "CloudWatch Logs",
+                "S3 (long-term storage)",
+                "Splunk/ELK (analysis)"
+            ],
+            "structured_logging": True,
+            "log_format": "JSON",
+            "required_fields": [
+                "timestamp",
+                "job_name",
+                "run_id",
+                "environment",
+                "log_level",
+                "message",
+                "metadata"
+            ]
         }
-    })
     
-    # Structured Logging Schema
-    log_schema: Dict[str, str] = field(default_factory=lambda: {
-        "timestamp": "ISO 8601 format",
-        "level": "Log level",
-        "job_name": "PySpark job identifier",
-        "job_run_id": "Unique execution ID",
-        "message": "Log message",
-        "source_system": "Data source",
-        "record_count": "Processed records",
-        "duration_ms": "Execution time",
-        "status": "SUCCESS/FAILURE/RUNNING",
-        "error_type": "Exception class if failed",
-        "stack_trace": "Full stack trace for errors",
-        "context": "Additional metadata"
-    })
-    
-    # Monitoring Metrics
-    monitoring_metrics: Dict[str, List[str]] = field(default_factory=lambda: {
-        "job_metrics": [
-            "Job execution duration",
-            "Success/failure rate",
-            "Records processed",
-            "Data volume (GB processed)",
-            "Resource utilization (CPU, Memory)"
-        ],
-        "data_quality_metrics": [
-            "Null check failures",
-            "Schema validation errors",
-            "Business rule violations",
-            "Duplicate records",
-            "Data freshness (SLA compliance)"
-        ],
-        "infrastructure_metrics": [
-            "Cluster utilization",
-            "Executor failures",
-            "Shuffle spill size",
-            "GC time percentage",
-            "Network I/O"
-        ],
-        "business_metrics": [
-            "Daily load volumes by source",
-            "Processing latency",
-            "Cost per job execution",
-            "SLA compliance percentage"
-        ]
-    })
-    
-    # Alerting Configuration
-    alerting_rules: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
-        "critical_alerts": {
-            "job_failure": {
-                "condition": "Job status = FAILED",
-                "channel": "PagerDuty + Email",
-                "response_time": "15 minutes"
-            },
-            "data_quality_breach": {
-                "condition": "Quality score < threshold",
-                "channel": "PagerDuty + Email",
-                "response_time": "30 minutes"
-            },
-            "sla_breach": {
-                "condition": "Job duration > SLA",
-                "channel": "Email + Slack",
-                "response_time": "1 hour"
-            }
-        },
-        "warning_alerts": {
-            "performance_degradation": {
-                "condition": "Duration > 1.5x baseline",
-                "channel": "Email",
-                "response_time": "4 hours"
-            },
-            "resource_constraint": {
-                "condition": "Memory/CPU > 80%",
-                "channel": "Slack",
-                "response_time": "Next business day"
+    def get_monitoring_metrics(self):
+        return {
+            "job_metrics": [
+                "execution_duration",
+                "records_processed",
+                "data_quality_score",
+                "success_failure_rate"
+            ],
+            "infrastructure_metrics": [
+                "cpu_utilization",
+                "memory_usage",
+                "disk_io",
+                "network_throughput"
+            ],
+            "business_metrics": [
+                "data_freshness",
+                "sla_compliance",
+                "cost_per_job",
+                "data_volume_trends"
+            ],
+            "alerting": {
+                "channels": ["PagerDuty", "Slack", "Email"],
+                "thresholds": {
+                    "job_failure": "immediate",
+                    "sla_breach": "within 15 minutes",
+                    "data_quality_issue": "within 30 minutes"
+                }
             }
         }
-    })
-    
-    # Monitoring Tools
-    monitoring_stack: Dict[str, str] = field(default_factory=lambda: {
-        "metrics": "Prometheus + Grafana / CloudWatch / Datadog",
-        "logging": "ELK Stack / Splunk / CloudWatch Logs",
-        "apm": "New Relic / Datadog APM",
-        "alerting": "PagerDuty / OpsGenie",
-        "dashboards": "Grafana / Databricks SQL Dashboards"
-    })
 
-
-# ============================================================================
-# ERROR HANDLING AND RETRY MECHANISMS
-# ============================================================================
 
 @dataclass
 class ErrorHandlingStrategy:
-    """
-    Comprehensive error handling and retry framework
-    """
+    """Error handling and retry mechanism design"""
     
-    # Error Classification
-    error_types: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
-        "transient_errors": {
-            "description": "Temporary failures that may resolve on retry",
-            "examples": [
-                "Network timeouts",
-                "Resource unavailable",
-                "Rate limiting",
-                "Temporary infrastructure issues"
-            ],
-            "strategy": "Retry with exponential backoff",
-            "max_retries": 3,
-            "backoff_multiplier": 2
-        },
-        "data_errors": {
-            "description": "Data quality or schema issues",
-            "examples": [
-                "Schema mismatch",
-                "Data validation failures",
-                "Corrupt records",
-                "Missing required fields"
-            ],
-            "strategy": "Quarantine bad records, continue processing",
-            "action": "Alert data quality team"
-        },
-        "infrastructure_errors": {
-            "description": "Platform or resource failures",
-            "examples": [
-                "Out of memory",
-                "Cluster unavailable",
-                "Disk space full",
-                "Authentication failures"
-            ],
-            "strategy": "Fail fast, alert operations",
-            "max_retries": 0,
-            "action": "Immediate escalation"
-        },
-        "business_logic_errors": {
-            "description": "Code bugs or logic issues",
-            "examples": [
-                "Null pointer exceptions",
-                "Division by zero",
-                "Invalid transformations"
-            ],
-            "strategy": "Fail and rollback",
-            "action": "Create incident, notify development team"
+    retry_policy: Dict[str, any] = field(default_factory=dict)
+    
+    def get_error_handling_patterns(self):
+        return {
+            "transient_errors": {
+                "examples": ["Network timeout", "Resource unavailable"],
+                "strategy": "Exponential backoff retry",
+                "max_retries": 3,
+                "initial_delay": "30 seconds",
+                "backoff_multiplier": 2
+            },
+            "data_quality_errors": {
+                "examples": ["Null values", "Schema mismatch"],
+                "strategy": "Quarantine bad records",
+                "action": "Continue processing, alert data owners"
+            },
+            "fatal_errors": {
+                "examples": ["Code bug", "Permission denied"],
+                "strategy": "Fail fast",
+                "action": "Immediate alert, manual intervention required"
+            }
         }
-    })
     
-    # Retry Configuration
-    retry_policies: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
-        "exponential_backoff": {
-            "initial_wait": "30 seconds",
-            "max_wait": "10 minutes",
-            "multiplier": 2,
-            "jitter": True,
-            "use_cases": ["Network errors", "Resource contention"]
-        },
-        "linear_backoff": {
-            "wait_time": "5 minutes",
-            "max_retries": 3,
-            "use_cases": ["Scheduled dependencies", "Rate limits"]
-        },
-        "immediate_retry": {
-            "wait_time": "0 seconds",
-            "max_retries": 2,
-            "use_cases": ["Transient Spark driver failures"]
+    def get_circuit_breaker_config(self):
+        return {
+            "enabled": True,
+            "failure_threshold": 5,
+            "timeout": "60 seconds",
+            "reset_timeout": "300 seconds",
+            "monitoring": "Track open/closed state transitions"
         }
-    })
-    
-    # Circuit Breaker Pattern
-    circuit_breaker_config: Dict[str, Any] = field(default_factory=lambda: {
-        "failure_threshold": 5,
-        "timeout": "60 seconds",
-        "half_open_attempts": 1,
-        "use_cases": [
-            "External API calls",
-            "Database connections",
-            "File system operations"
-        ]
-    })
-    
-    # Dead Letter Queue Strategy
-    dlq_strategy: Dict[str, str] = field(default_factory=lambda: {
-        "location": "s3://datalake/dead-letter-queue/",
-        "format": "JSON with full context",
-        "retention": "30 days",
-        "processing": "Manual review and reprocessing workflow",
-        "metadata": "Error type, timestamp, original payload, stack trace"
-    })
-    
-    # Recovery Procedures
-    recovery_procedures: Dict[str, List[str]] = field(default_factory=lambda: {
-        "job_failure_recovery": [
-            "1. Check logs and identify root cause",
-            "2. Determine if manual intervention required",
-            "3. Fix issue (data, code, or infrastructure)",
-            "4. Clear checkpoint if needed for streaming",
-            "5. Restart job with replay from last successful point",
-            "6. Monitor recovery job execution",
-            "7. Validate output data completeness"
-        ],
-        "data_corruption_recovery": [
-            "1. Identify corrupted partitions",
-            "2. Stop downstream dependencies",
-            "3. Restore from backup or re-run source",
-            "4. Validate restored data",
-            "5. Resume downstream processing",
-            "6. Perform reconciliation"
-        ],
-        "infrastructure_recovery": [
-            "1. Engage infrastructure team",
-            "2. Provision alternative resources if needed",
-            "3. Update job configurations",
-            "4. Test with sample job",
-            "5. Resume full processing",
-            "6. Post-mortem analysis"
-        ]
-    })
 
-
-# ============================================================================
-# CONFIGURATION MANAGEMENT
-# ============================================================================
 
 @dataclass
 class ConfigurationManagement:
-    """
-    Configuration management strategy and framework
-    """
+    """Configuration management approach"""
     
-    # Configuration Layers
-    config_hierarchy: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
-        "environment_config": {
-            "description": "Environment-specific settings",
-            "examples": ["dev", "test", "staging", "production"],
-            "format": "YAML",
-            "location": "s3://config-bucket/environment/",
-            "includes": [
-                "Cluster configurations",
-                "Connection strings",
-                "Resource allocations",
-                "Service endpoints"
-            ]
-        },
-        "job_config": {
-            "description": "Job-specific parameters",
-            "format": "YAML/JSON",
-            "location": "s3://config-bucket/jobs/",
-            "includes": [
-                "Source/target paths",
-                "Transformation rules",
-                "Data quality thresholds",
-                "Schedule definitions"
-            ]
-        },
-        "application_config": {
-            "description": "Application-wide settings",
-            "format": "YAML",
-            "location": "s3://config-bucket/application/",
-            "includes": [
-                "Logging configuration",
-                "Retry policies",
-                "Alert thresholds",
-                "Feature flags"
-            ]
-        },
-        "secrets": {
-            "description": "Sensitive credentials",
-            "management": "AWS Secrets Manager / Azure Key Vault / HashiCorp Vault",
-            "rotation": "Automated 90-day rotation",
-            "access_control": "IAM/RBAC with least privilege"
+    config_source: str
+    
+    def get_config_hierarchy(self):
+        return {
+            "priority_order": [
+                "1. Runtime parameters (highest)",
+                "2. Environment variables",
+                "3. Environment-specific YAML",
+                "4. Default configuration (lowest)"
+            ],
+            "config_categories": {
+                "connection_configs": "Database, API endpoints",
+                "job_configs": "Parallelism, memory settings",
+                "business_configs": "Date ranges, thresholds",
+                "infrastructure_configs": "Cluster size, autoscaling"
+            },
+            "secret_management": {
+                "platform": "AWS Secrets Manager / Azure Key Vault",
+                "rotation": "90 days",
+                "access_control": "IAM roles / Managed identities"
+            }
         }
-    })
     
-    # Configuration Management Tools
-    tools: Dict[str, str] = field(default_factory=lambda: {
-        "version_control": "Git repository for config files",
-        "validation": "JSON Schema / YAML linting",
-        "deployment": "CI/CD pipeline with approval gates",
-        "runtime_access": "AWS AppConfig / Spring Cloud Config",
-        "encryption": "KMS encryption for sensitive values"
-    })
-    
-    # Configuration Schema Example
-    job_config_schema: Dict[str, Any] = field(default_factory=lambda: {
-        "job_metadata": {
-            "job_name": "string",
-            "version": "string",
-            "owner_team": "string",
-            "sla_minutes": "integer"
-        },
-        "spark_config": {
-            "executor_memory": "string",
-            "executor_cores": "integer",
-            "driver_memory": "string",
-            "shuffle_partitions": "integer"
-        },
-        "source_config": {
-            "source_type": "enum[jdbc, s3, kafka]",
-            "connection_details": "object",
-            "read_options": "object"
-        },
-        "transformation_config": {
-            "business_rules": "list",
-            "filter_conditions": "string",
-            "aggregation_logic": "object"
-        },
-        "target_config": {
-            "target_path": "string",
-            "format": "string",
-            "partition_by": "list",
-            "write_mode": "enum[overwrite, append, merge]"
-        },
-        "data_quality_config": {
-            "enabled": "boolean",
-            "rules": "list",
-            "thresholds": "object"
-        }
-    })
-    
-    # Environment Promotion Process
-    promotion_process: List[str] = field(default_factory=lambda: [
-        "1. Update config in Git repository",
-        "2. Create pull request with changes",
-        "3. Automated validation and testing",
-        "4. Peer review and approval",
-        "5. Merge to development branch",
-        "6. Automated deployment to DEV",
-        "7. Integration testing in DEV",
-        "8. Promotion to TEST environment",
-        "9. UAT and validation",
-        "10. Change approval for production",
-        "11. Automated deployment to PROD",
-        "12. Smoke tests and monitoring"
-    ])
+    def get_config_template(self):
+        return """
+# config/prod.yaml
+environment: production
 
+spark:
+  app_name: ${job_name}_prod
+  configs:
+    spark.sql.adaptive.enabled: true
+    spark.sql.adaptive.coalescePartitions.enabled: true
+    spark.sql.shuffle.partitions: 200
+    spark.dynamicAllocation.enabled: true
 
-# ============================================================================
-# TESTING AND VALIDATION STRATEGY
-# ============================================================================
+sources:
+  database:
+    jdbc_url: ${DB_JDBC_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD_SECRET}
+    connection_pool_size: 10
+
+storage:
+  bronze_path: s3://prod-datalake/bronze
+  silver_path: s3://prod-datalake/silver
+  gold_path: s3://prod-datalake/gold
+  checkpoint_location: s3://prod-datalake/checkpoints
+
+data_quality:
+  enabled: true
+  fail_on_error: false
+  quarantine_path: s3://prod-datalake/quarantine
+
+monitoring:
+  log_level: WARN
+  metrics_enabled: true
+  cloudwatch_namespace: DataPlatform/PySpark
+"""
+
 
 @dataclass
-class TestingStrategy:
-    """
-    Comprehensive testing framework and validation approach
-    """
+class TestingValidationStrategy:
+    """Comprehensive testing strategy"""
     
-    # Testing Pyramid
-    testing_layers: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
-        "unit_tests": {
-            "coverage_target": "80%",
-            "framework": "pytest",
-            "scope": [
-                "Individual functions",
-                "Transformation logic",
-                "Data validation rules",
-                "Utility functions"
-            ],
-            "approach": "Mock external dependencies",
-            "execution": "Every commit (CI/CD)",
-            "sample_count": "Small datasets (< 1000 records)"
-        },
-        "integration_tests": {
-            "coverage_target": "60%",
-            "framework": "pytest + PySpark test fixtures",
-            "scope": [
-                "End-to-end job execution",
-                "Reader -> Transformer -> Writer flow",
-                "External system integration",
-                "Data quality checks"
-            ],
-            "approach": "Use test data lake",
-            "execution": "Pre-deployment",
-            "sample_count": "Representative datasets (10K-100K records)"
-        },
-        "system_tests": {
-            "coverage_target": "Critical paths",
-            "framework": "Automated test suites",
-            "scope": [
-                "Full workflow orchestration",
-                "Multi-job dependencies",
-                "Error scenarios",
-                "Performance benchmarks"
-            ],
-            "approach": "Staging environment",
-            "execution": "Weekly + pre-release",
-            "sample_count": "Production-like volume"
-        },
-        "data_validation_tests": {
-            "coverage_target": "100% of data loads",
-            "framework": "Great Expectations / Deequ",
-            "scope": [
-                "Row count reconciliation",
-                "Schema validation",
-                "Data quality metrics",
-                "Business rule validation"
-            ],
-            "approach": "Production data",
-            "execution": "Every job run",
-            "sample_count": "Full production data"
+    coverage_target: float = 80.0
+    
+    def get_testing_levels(self):
+        return {
+            "unit_tests": {
+                "framework": "pytest",
+                "scope": "Individual functions and transformations",
+                "coverage_target": "90%",
+                "execution": "Pre-commit hook, CI/CD",
+                "tools": ["pytest-spark", "chispa"]
+            },
+            "integration_tests": {
+                "framework": "pytest",
+                "scope": "End-to-end job execution with sample data",
+                "coverage_target": "80%",
+                "execution": "CI/CD pipeline",
+                "test_data": "Synthetic datasets covering edge cases"
+            },
+            "data_quality_tests": {
+                "framework": "Great Expectations",
+                "scope": "Data validation at each layer",
+                "rules": [
+                    "Schema validation",
+                    "Completeness checks",
+                    "Referential integrity",
+                    "Business rule validation"
+                ]
+            },
+            "performance_tests": {
+                "framework": "Custom benchmarking",
+                "scope": "Job execution time, resource utilization",
+                "baseline": "Informatica performance metrics",
+                "acceptance": "Within 10% of baseline"
+            },
+            "regression_tests": {
+                "scope": "Output comparison with Informatica",
+                "strategy": "Parallel run validation",
+                "tolerance": "Row-level match 99.9%"
+            }
         }
-    })
     
-    # Test Data Strategy
-    test_data_strategy: Dict[str, Any] = field(default_factory=lambda: {
-        "synthetic_data": {
-            "use_case": "Unit and integration tests",
-            "generation": "Faker library or custom generators",
-            "volume": "Small representative samples"
-        },
-        "production_subset": {
-            "use_case": "System and performance tests",
-            "approach": "Masked/anonymized prod data",
-            "sampling": "Stratified sampling for representativeness",
-            "compliance": "PII masking required"
-        },
-        "edge_cases": {
-            "use_case": "Error handling validation",
-            "scenarios": [
-                "Null/missing values",
-                "Duplicate records",
-                "Schema mismatches",
-                "Boundary values",
-                "Invalid data types"
-            ]
+    def get_validation_approach(self):
+        return {
+            "pre_migration_validation": {
+                "tasks": [
+                    "Source data profiling",
+                    "Informatica logic documentation",
+                    "Expected output capture"
+                ]
+            },
+            "parallel_run_validation": {
+                "duration": "2-4 weeks per workload",
+                "comparison": "Row-by-row, column-by-column",
+                "tools": ["custom reconciliation scripts", "data diff tools"],
+                "sign_off_criteria": "99.9% match rate"
+            },
+            "post_migration_validation": {
+                "monitoring_period": "30 days",
+                "checks": [
+                    "Data quality scores",
+                    "SLA compliance",
+                    "Error rates",
+                    "Performance benchmarks"
+                ]
+            }
         }
-    })
-    
-    # Data Validation Framework
-    validation_rules: Dict[str, List[str]] = field(default_factory=lambda: {
-        "pre_migration_validation": [
-            "Extract row counts from Informatica logs",
-            "Document current data quality metrics",
-            "Capture schema definitions",
-            "Baseline performance metrics",
-            "Identify known data issues"
-        ],
-        "post_migration_validation": [
-            "Row count reconciliation (source vs target)",
-            "Column-level checksum validation",
-            "Schema comparison",
-            "Business KPI validation",
-            "Performance comparison",
-            "Data quality metric comparison"
-        ],
-        "ongoing_validation": [
-            "Automated daily reconciliation",
-            "Trending of data quality metrics",
-            "SLA monitoring",
-            "Cost tracking",
-            "Performance regression detection"
-        ]
-    })
-    
-    # Performance Testing
-    performance_testing: Dict[str, Any] = field(default_factory=lambda: {
-        "baseline_establishment": {
-            "current_informatica_metrics": [
-                "Average job duration",
-                "Peak resource utilization",
-                "Cost per job",
-                "End-to-end latency"
-            ]
-        },
-        "pyspark_benchmarking": {
-            "test_scenarios": [
-                "Small file processing (< 1GB)",
-                "Large file processing (> 100GB)",
-                "Wide transformations (joins, aggregations)",
-                "Complex business logic",
-                "High-volume loads"
-            ],
-            "optimization_targets": [
-                "50% reduction in processing time",
-                "40% cost reduction",
-                "Improved scalability",
-                "Better resource utilization"
-            ]
-        },
-        "load_testing": {
-            "scenarios": [
-                "Peak load (end-of-month processing)",
-                "Concurrent job execution",
-                "Failure and recovery",
-                "Scale-up/scale-down behavior"
-            ]
-        }
-    })
-    
-    # Automated Testing Infrastructure
-    ci_cd_testing: Dict[str, List[str]] = field(default_factory=lambda: {
-        "commit_stage": [
-            "Linting (flake8, black)",
-            "Unit tests",
-            "Code coverage check",
-            "Security scanning (Bandit)"
-        ],
-        "build_stage": [
-            "Package creation",
-            "Dependency resolution",
-            "Docker image build"
-        ],
-        "test_stage": [
-            "Integration tests",
-            "Data validation tests",
-            "Performance smoke tests"
-        ],
-        "deploy_stage": [
-            "Automated deployment to TEST",
-            "System tests",
-            "Approval gate for PROD"
-        ]
-    })
 
-
-# ============================================================================
-# MIGRATION APPROACH AND PHASING
-# ============================================================================
 
 @dataclass
 class MigrationStrategy:
-    """
-    Detailed migration approach and execution plan
-    """
+    """Phased migration approach and rollout plan"""
     
-    # Selected Migration Approach
-    selected_approach: MigrationApproach = MigrationApproach.HYBRID
+    approach: MigrationApproach
     
-    approach_rationale: Dict[str, str] = field(default_factory=lambda: {
-        "Lift and Shift": "Quick wins for simple workflows, minimal code changes",
-        "Refactor": "Complex logic requiring optimization and modernization",
-        "Hybrid": "Balanced approach based on workflow complexity and business priority",
-        "Risk Management": "Incremental rollout reduces risk",
-        "Resource Optimization": "Focus refactoring on high-value workflows"
-    })
-    
-    # Migration Decision Matrix
-    decision_criteria: Dict[str, Dict[str, str]] = field(default_factory=lambda: {
-        "lift_and_shift_candidates": {
-            "complexity": "Low (simple transformations)",
-            "performance": "Acceptable current performance",
-            "business_criticality": "Low to medium",
-            "technical_debt": "Low",
-            "example": "Simple file-to-file loads with minimal transformations"
-        },
-        "refactor_candidates": {
-            "complexity": "High (complex business logic)",
-            "performance": "Performance issues in current state",
-            "business_criticality": "High",
-            "technical_debt": "High",
-            "example": "Multi-source aggregations with complex joins"
+    def get_migration_phases(self):
+        return {
+            "phase_1_foundation": {
+                "duration": "4-6 weeks",
+                "objectives": [
+                    "Set up infrastructure",
+                    "Establish CI/CD pipelines",
+                    "Implement logging/monitoring framework",
+                    "Create reusable libraries"
+                ],
+                "deliverables": [
+                    "Infrastructure as Code templates",
+                    "Common utilities library",
+                    "CI/CD pipeline operational",
+                    "Monitoring dashboards"
+                ]
+            },
+            "phase_2_pilot": {
+                "duration": "6-8 weeks",
+                "objectives": [
+                    "Migrate 3-5 low complexity jobs",
+                    "Validate migration patterns",
+                    "Refine testing strategy",
+                    "Train team"
+                ],
+                "deliverables": [
+                    "Pilot jobs in production",
+                    "Migration runbook",
+                    "Lessons learned document",
+                    "Team certified on PySpark"
+                ]
+            },
+            "phase_3_wave_migration": {
+                "duration": "12-24 weeks",
+                "objectives": [
+                    "Migrate jobs in priority order",
+                    "Parallel run validation",
+                    "Performance optimization",
+                    "User acceptance testing"
+                ],
+                "approach": "Agile sprints (2-week cycles)",
+                "capacity": "5-10 jobs per sprint",
+                "deliverables": [
+                    "Migrated jobs in production",
+                    "Validation reports",
+                    "Performance benchmarks",
+                    "Sign-off from business"
+                ]
+            },
+            "phase_4_decommission": {
+                "duration": "4-8 weeks",
+                "objectives": [
+                    "Stabilize PySpark environment",
+                    "Decommission Informatica",
+                    "Knowledge transfer",
+                    "Hypercare support"
+                ],
+                "deliverables": [
+                    "Informatica shutdown",
+                    "Complete documentation",
+                    "Support team trained",
+                    "Post-migration review"
+                ]
+            }
         }
-    })
     
-    # Migration Wave Planning
-    migration_waves: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
-        "wave_0_poc": {
-            "phase": DeploymentPhase.PHASE_1_POC,
-            "duration": "4 weeks",
-            "objective": "Validate architecture and approach",
+    def get_prioritization_criteria(self):
+        return {
+            "priority_1_high": {
+                "characteristics": [
+                    "Low complexity",
+                    "Well-documented",
+                    "Low business criticality",
+                    "Suitable for pilot"
+                ],
+                "examples": ["Simple file to table loads", "Lookup transformations"]
+            },
+            "priority_2_medium": {
+                "characteristics": [
+                    "Moderate complexity",
+                    "Standard transformations",
+                    "Medium business criticality",
+                    "Good candidate for patterns"
+                ],
+                "examples": ["Multi-source joins", "Aggregations", "SCD Type 2"]
+            },
+            "priority_3_low": {
+                "characteristics": [
+                    "High complexity",
+                    "Custom logic",
+                    "High business criticality",
+                    "Requires deep analysis"
+                ],
+                "examples": ["Complex business rules", "Real-time streaming", "ML pipelines"]
+            }
+        }
+    
+    def get_rollback_procedures(self):
+        return {
+            "rollback_triggers": [
+                "Critical production issue",
+                "Data quality failure",
+                "Performance degradation > 50%",
+                "Business stakeholder request"
+            ],
+            "rollback_steps": {
+                "immediate": [
+                    "1. Stop PySpark job execution",
+                    "2. Activate Informatica job",
+                    "3. Notify stakeholders",
+                    "4. Monitor Informatica execution"
+                ],
+                "post_rollback": [
+                    "1. Conduct root cause analysis",
+                    "2. Document issues and fixes",
+                    "3. Update code and tests",
+                    "4. Plan re-migration"
+                ]
+            },
+            "rollback_automation": {
+                "infrastructure": "IaC allows quick environment teardown",
+                "orchestration": "Switch DAG activation in Airflow",
+                "data": "Delta Lake time travel to previous version",
+                "monitoring": "Automatic alerts on rollback events"
+            }
+        }
+
+
+@dataclass
+class OrchestrationDesign:
+    """Orchestration platform design and DAG patterns"""
+    
+    platform: OrchestrationType
+    
+    def get_airflow_design(self):
+        return """
+from airflow import DAG
+from airflow.providers.databricks.operators.databricks import DatabricksSubmitRunOperator
+from airflow.operators.python import PythonOperator
+from datetime import datetime, timedelta
+
+default_args = {
+    'owner': 'data-engineering',
+    'depends_on_past': False,
+    'email': ['data-team@company.com'],
+    'email_on_failure': True,
+    'email_on_retry': False,
+    'retries': 3,
+    'retry_delay': timedelta(minutes=5),
+    'retry_exponential_backoff': True,
+    'max_retry_delay': timedelta(minutes=30)
+}
+
+dag = DAG(
+    'customer_data_pipeline',
+    default_args=default_args,
+    description='Migrated from Informatica workflow WF_CUSTOMER_DAILY',
+    schedule_interval='0 2 * * *',  # 2 AM daily
+    start_date=datetime(2024, 1, 1),
+    catchup=False,
+    tags=['migration', 'customer', 'daily'],
+    max_active_runs=1
+)
+
+# Bronze layer ingestion
+bronze_ingestion = DatabricksSubmitRunOperator(
+    task_id='bronze_customer_ingestion',
+    databricks_conn_id='databricks_prod',
+    json={
+        'new_cluster': {
+            'spark_version': '13.3.x-scala2.12',
+            'node_type_id': 'i3.xlarge',
+            'num_workers': 4,
+            'autoscale': {'min_workers': 2, 'max_workers': 8}
+        },
+        'spark_python_task': {
+            'python_file': 's3://code-bucket/jobs/bronze/customer_ingestion.py',
+            'parameters': [
+                '--environment', 'prod',
+                '--run_date', '{{ ds }}'
+            ]
+        }
+    },
+    dag=dag
+)
+
+# Silver layer transformation
+silver_transformation = DatabricksSubmitRunOperator(
+    task_id='silver_customer_transformation',
+    databricks_conn_id='databricks_prod',
+    json={
+        'new_cluster': {
+            'spark_version': '13.3.x-scala2.12',
+            'node_type_id': 'i3.xlarge',
+            'num_workers': 4,
+            'autoscale': {'min_workers': 2, 'max_workers': 8}
+        },
+        'spark_python_task': {
+            'python_file': 's3://code-bucket/jobs/silver/customer_transformation.py',
+            'parameters': [
+                '--environment', 'prod',
+                '--run_date', '{{ ds }}'
+            ]
+        }
+    },
+    dag=dag
+)
+
+# Gold layer aggregation
+gold_aggregation = DatabricksSubmitRunOperator(
+    task_id='gold_customer_aggregation',
+    databricks_conn_id='databricks_prod',
+    json={
+        'new_cluster': {
+            'spark_version': '13.3.x-scala2.12',
+            'node_type_id': 'i3.xlarge',
+            'num_workers': 2,
+            'autoscale': {'min_workers': 2, 'max_workers': 4}
+        },
+        'spark_python_task': {
+            'python_file': 's3://code-bucket/jobs/gold/customer_aggregation.py',
+            'parameters': [
+                '--environment', 'prod',
+                '--run_date', '{{ ds }}'
+            ]
+        }
+    },
+    dag=dag
+)
+
+# Data quality validation
+def validate_data_quality(**context):
+    from great_expectations_provider.operators.great_expectations import GreatExpectationsOperator
+    # Validation logic
+    pass
+
+data_quality_check = PythonOperator(
+    task_id='data_quality_validation',
+    python_callable=validate_data_quality,
+    provide_context=True,
+    dag=dag
+)
+
+# Define dependencies
+bronze_ingestion >> silver_transformation >> gold_aggregation >> data_quality_check
+"""
+    
+    def get_databricks_workflow_design(self):
+        return """
+# Databricks Workflow JSON definition
+{
+  "name": "customer_data_pipeline",
+  "email_notifications": {
+    "on_failure": ["data-team@company.com"],
+    "no_alert_for_skipped_runs": false
+  },
+  "timeout_seconds": 7200,
+  "max_concurrent_runs": 1,
+  "schedule": {
+    "quartz_cron_expression": "0 0 2 * * ?",
+    "timezone_id": "America/New_York",
+    "pause_status": "UNPAUSED"
+  },
+  "tasks": [
+    {
+      "task_key": "bronze_customer_ingestion",
+      "description": "Ingest customer data to bronze layer",
+      "timeout_seconds": 3600,
+      "max_retries": 3,
+      "min_retry_interval_millis": 300000,
+      "retry_on_timeout": true,
+      "new_cluster": {
+        "spark_version": "13.3.x-scala2.12",
+        "node_type_id": "i3.xlarge",
+        "autoscale": {
+          "min_workers": 2,
+          "max_workers": 8
+        }
+      },
+      "spark_python_task": {
+        "python_file": "dbfs:/jobs/bronze/customer_ingestion.py",
+        "parameters": [
+          "--environment", "prod",
+          "--run_date", "{{job.start_time.date}}"
+        ]
+      }
+    },
+    {
+      "task_key": "silver_customer_transformation",
+      "depends_on": [{"task_key": "bronze_customer_ingestion"}],
+      "timeout_seconds": 3600,
+      "max_retries": 3,
+      "new_cluster": {
+        "spark_version": "13.3.x-scala2.12",
+        "node_type_id": "i3.xlarge",
+        "autoscale": {
+          "min_workers": 2,
+          "max_workers": 8
+        }
+      },
+      "spark_python_task": {
+        "python_file": "dbfs:/jobs/silver/customer_transformation.py",
+        "parameters": [
+          "--environment", "prod",
+          "--run_date", "{{job.start_time.date}}"
+        ]
+      }
+    },
+    {
+      "task_key": "gold_customer_aggregation",
+      "depends_on": [{"task_key": "silver_customer_transformation"}],
+      "timeout_seconds": 1800,
+      "max_retries": 3,
+      "new_cluster": {
+        "spark_version": "13.3.x-scala2.12",
+        "node_type_id": "i3.xlarge",
+        "autoscale": {
+          "min_workers": 2,
+          "max_workers": 4
+        }
+      },
+      "spark_python_task": {
+        "python_file": "dbfs:/jobs/gold/customer_aggregation.py",
+        "parameters": [
+          "--environment", "prod",
+          "--run_date", "{{job.start_time.date}}"
+        ]
+      }
+    }
+  ]
+}
+"""
+
+
+# ==============================================================================
+# REUSABLE CODE TEMPLATES
+# ==============================================================================
+
+class PySparkJobTemplate:
+    """Standard PySpark job template with best practices"""
+    
+    @staticmethod
+    def get_base_job_template():
+        return '''
+"""
+Job: {job_name}
+Description: {job_description}
+Migrated from: Informatica workflow {informatica_workflow}
+Author: Data Engineering Team
+Date: {migration_date}
+"""
+
+import sys
+import logging
+from datetime import datetime
+from typing import Dict, Any
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql import functions as F
+from delta.tables import DeltaTable
+
+# Import common utilities
+from common.utils.config_loader import ConfigLoader
+from common.utils.logger import setup_logging
+from common.utils.spark_factory import SparkFactory
+from common.utils.exception_handler import handle_exceptions
+from common.transformations.base_transformer import BaseTransformer
+from common.validators.data_quality import DataQualityValidator
+
+
+class {JobClassName}(BaseTransformer):
+    """
+    {Job Description}
+    
+    Source System: {source_system}
+    Target Layer: {target_layer}
+    Frequency: {schedule}
+    SLA: {sla_requirement}
+    """
+    
+    def __init__(self, config: Dict[str, Any], spark: SparkSession):
+        """
+        Initialize job with configuration and Spark session
+        
+        Args:
+            config: Job configuration dictionary
+            spark: Active Spark session
+        """
+        super().__init__(config, spark)
+        self.job_name = config['job']['name']
+        self.environment = config['environment']
+        self.run_date = config['run_date']
+        
+        # Set up logging
+        self.logger = logging.getLogger(self.job_name)
+        
+        # Initialize metrics
+        self.metrics = {
+            'start_time': datetime.now(),
+            'records_read': 0,
+            'records_written': 0,
+            'records_rejected': 0
+        }
+    
+    @handle_exceptions(default_return_value=False)
+    def extract(self) -> DataFrame:
+        """
+        Extract data from source system
+        
+        Returns:
+            DataFrame: Raw source data
+        """
+        self.logger.info(f"Starting extraction for {self.job_name}")
+        
+        # Example: Read from JDBC source
+        source_df = (
+            self.spark.read
+            .format("jdbc")
+            .option("url", self.config['source']['jdbc_url'])
+            .option("dbtable", self.config['source']['table'])
+            .option("user", self.config['source']['username'])
+            .option("password", self.config['source']['password'])
+            .option("fetchsize", 10000)
+            .option("numPartitions", 8)
+            .load()
+        )
+        
+        self.metrics['records_read'] = source_df.count()
+        self.logger.info(f"Extracted {self.metrics['records_read']} records")
+        
+        return source_df
+    
+    @handle_exceptions(default_return_value=None)
+    def transform(self, df: DataFrame) -> DataFrame:
+        """
+        Apply business transformations
+        
+        Args:
+            df: Input DataFrame
+            
+        Returns:
+            DataFrame: Transformed data
+        """
+        self.logger.info("Starting transformation")
+        
+        # Add audit columns
+        transformed_df = (
+            df
+            .withColumn("ingestion_timestamp", F.current_timestamp())
+            .withColumn("job_run_id", F.lit(self.config['run_id']))
+            .withColumn("source_system", F.lit(self.config['source']['system']))
+        )
+        
+        # Apply business logic
+        # TODO: Implement specific transformations migrated from Informatica
+        
+        self.logger.info("Transformation completed")
+        return transformed_df
+    
+    @handle_exceptions(default_return_value=False)
+    def validate(self, df: DataFrame) -> bool:
+        """
+        Validate data quality
+        
+        Args:
+            df: DataFrame to validate
+            
+        Returns:
+            bool: True if validation passes
+        """
+        self.logger.info("Starting data quality validation")
+        
+        validator = DataQualityValidator(self.config, self.spark)
+        
+        validation_rules = [
+            validator.check_null_values(df, ['primary_key_column']),
+            validator.check_duplicates(df, ['primary_key_column']),
+            validator.check_referential_integrity(df, self.config['validation']['reference_tables'])
+        ]
+        
+        validation_passed = all(validation_rules)
+        
+        if not validation_passed:
+            self.logger.error("Data quality validation failed")
+            self.metrics['records_rejected'] = df.count()
+        
+        return validation_passed
+    
+    @handle_exceptions(default_return_value=False)
+    def load(self, df: DataFrame) -> bool:
+        """
+        Load data to target location
+        
+        Args:
+            df: DataFrame to load
+            
+        Returns:
+            bool: True if load successful
+        """
+        self.logger.info("Starting data load")
+        
+        target_path = self.config['target']['path']
+        
+        # Write to Delta Lake with merge
+        if DeltaTable.isDeltaTable(self.spark, target_path):
+            delta_table = DeltaTable.forPath(self.spark, target_path)
+            
+            # Perform merge (upsert) operation
+            (
+                delta_table.alias("target")
+                .merge(
+                    df.alias("source"),
+                    "target.primary_key = source.primary_key"
+                )
+                .whenMatchedUpdateAll()
+                .whenNotMatchedInsertAll()
+                .execute()
+            )
+        else:
+            # Initial load
+            (
+                df.write
+                .format("delta")
+                .mode("overwrite")
+                .partitionBy(self.config['target']['partition_columns'])
+                .option("overwriteSchema", "true")
+                .save(target_path)
+            )
+        
+        self.metrics['records_written'] = df.count()
+        self.logger.info(f"Loaded {self.metrics['records_written']} records")
+        
+        return True
+    
+    def run(self) -> bool:
+        """
+        Execute complete ETL pipeline
+        
+        Returns:
+            bool: True if job successful
+        """
+        try:
+            self.logger.info(f"Starting job execution: {self.job_name}")
+            
+            # Extract
+            source_df = self.extract()
+            if source_df is None:
+                raise Exception("Extraction failed")
+            
+            # Transform
+            transformed_df = self.transform(source_df)
+            if transformed_df is None:
+                raise Exception("Transformation failed")
+            
+            # Validate
+            if not self.validate(transformed_df):
+                if self.config['data_quality']['fail_on_error']:
+                    raise Exception("Data quality validation failed")
+                else:
+                    self.logger.warning("Data quality issues detected, continuing...")
