@@ -1,1036 +1,824 @@
-# =============================================================================
-# PySpark Development Environment and Infrastructure Setup
-# =============================================================================
-# Description: Complete infrastructure setup for Informatica to PySpark migration
-# Author: Data Engineering Team
-# Version: 1.0.0
-# =============================================================================
+# infrastructure_setup.py
+"""
+Infrastructure Setup for PySpark Migration from Informatica
+Provisions development, testing, and production environments
+"""
 
 import os
 import json
-import logging
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Optional
-import subprocess
 import yaml
+from typing import Dict, List, Optional
+from dataclasses import dataclass, asdict
+from datetime import datetime
 
-# =============================================================================
-# Configuration Classes
-# =============================================================================
 
-class InfrastructureConfig:
-    """Configuration for infrastructure setup"""
+# ============================================================================
+# CONFIGURATION CLASSES
+# ============================================================================
+
+@dataclass
+class SparkConfig:
+    """Spark cluster configuration"""
+    spark_version: str = "3.5.0"
+    scala_version: str = "2.12"
+    driver_memory: str = "4g"
+    driver_cores: int = 2
+    executor_memory: str = "8g"
+    executor_cores: int = 4
+    num_executors: int = 10
+    dynamic_allocation: bool = True
+    adaptive_query_execution: bool = True
     
-    def __init__(self, cloud_provider: str = "aws"):
-        self.cloud_provider = cloud_provider
-        self.project_name = "pyspark-migration"
-        self.environment = os.getenv("ENVIRONMENT", "dev")
-        self.region = os.getenv("CLOUD_REGION", "us-east-1")
-        self.setup_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-    def get_config(self) -> Dict:
+    def to_spark_conf(self) -> Dict[str, str]:
+        """Convert to Spark configuration dictionary"""
         return {
-            "cloud_provider": self.cloud_provider,
-            "project_name": self.project_name,
-            "environment": self.environment,
-            "region": self.region,
-            "setup_timestamp": self.setup_timestamp
+            "spark.driver.memory": self.driver_memory,
+            "spark.driver.cores": str(self.driver_cores),
+            "spark.executor.memory": self.executor_memory,
+            "spark.executor.cores": str(self.executor_cores),
+            "spark.executor.instances": str(self.num_executors),
+            "spark.dynamicAllocation.enabled": str(self.dynamic_allocation).lower(),
+            "spark.sql.adaptive.enabled": str(self.adaptive_query_execution).lower(),
+            "spark.sql.adaptive.coalescePartitions.enabled": "true",
+            "spark.sql.adaptive.skewJoin.enabled": "true",
+            "spark.sql.sources.partitionOverwriteMode": "dynamic",
+            "spark.sql.hive.convertMetastoreParquet": "true",
+            "spark.sql.parquet.mergeSchema": "false",
+            "spark.sql.parquet.filterPushdown": "true",
+            "spark.sql.orc.filterPushdown": "true",
+            "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
+            "spark.kryoserializer.buffer.max": "512m",
+            "spark.network.timeout": "800s",
+            "spark.executor.heartbeatInterval": "60s"
         }
 
 
-# =============================================================================
-# 1. Cloud Infrastructure Provisioning (Terraform)
-# =============================================================================
+@dataclass
+class EnvironmentConfig:
+    """Environment-specific configuration"""
+    name: str
+    env_type: str  # dev, test, prod
+    region: str
+    vpc_cidr: str
+    availability_zones: List[str]
+    enable_high_availability: bool
+    backup_retention_days: int
+    
+    def __post_init__(self):
+        """Validate environment configuration"""
+        valid_types = ["dev", "test", "prod"]
+        if self.env_type not in valid_types:
+            raise ValueError(f"env_type must be one of {valid_types}")
 
-TERRAFORM_MAIN_TF = """
-# Terraform Configuration for PySpark Migration Infrastructure
-terraform {
-  required_version = ">= 1.0"
-  
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
-  
-  backend "s3" {
-    bucket         = "pyspark-migration-terraform-state"
-    key            = "infrastructure/terraform.tfstate"
-    region         = "us-east-1"
-    encrypt        = true
-    dynamodb_table = "terraform-state-lock"
-  }
-}
 
-provider "aws" {
-  region = var.aws_region
-  
-  default_tags {
-    tags = {
-      Project     = "PySpark-Migration"
-      ManagedBy   = "Terraform"
-      Environment = var.environment
-    }
-  }
-}
+@dataclass
+class DatabaseConfig:
+    """Database configuration for testing and metadata"""
+    db_type: str  # postgres, mysql, oracle
+    host: str
+    port: int
+    database: str
+    username: str
+    password_secret_name: str
+    max_connections: int = 50
+    connection_timeout: int = 30
+    
+    def get_jdbc_url(self) -> str:
+        """Generate JDBC connection URL"""
+        if self.db_type == "postgres":
+            return f"jdbc:postgresql://{self.host}:{self.port}/{self.database}"
+        elif self.db_type == "mysql":
+            return f"jdbc:mysql://{self.host}:{self.port}/{self.database}"
+        elif self.db_type == "oracle":
+            return f"jdbc:oracle:thin:@{self.host}:{self.port}:{self.database}"
+        else:
+            raise ValueError(f"Unsupported database type: {self.db_type}")
 
-# Variables
-variable "aws_region" {
-  description = "AWS region for resources"
-  type        = string
-  default     = "us-east-1"
-}
 
-variable "environment" {
-  description = "Environment name"
-  type        = string
-  default     = "dev"
-}
+# ============================================================================
+# AWS INFRASTRUCTURE SETUP
+# ============================================================================
 
-variable "project_name" {
-  description = "Project name"
-  type        = string
-  default     = "pyspark-migration"
-}
-
-# VPC Configuration
-resource "aws_vpc" "main" {
-  cidr_block           = "10.0.0.0/16"
-  enable_dns_hostnames = true
-  enable_dns_support   = true
-  
-  tags = {
-    Name = "${var.project_name}-vpc-${var.environment}"
-  }
-}
-
-# Subnets
-resource "aws_subnet" "private" {
-  count             = 3
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.${count.index + 1}.0/24"
-  availability_zone = data.aws_availability_zones.available.names[count.index]
-  
-  tags = {
-    Name = "${var.project_name}-private-subnet-${count.index + 1}-${var.environment}"
-  }
-}
-
-resource "aws_subnet" "public" {
-  count                   = 3
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.${count.index + 101}.0/24"
-  availability_zone       = data.aws_availability_zones.available.names[count.index]
-  map_public_ip_on_launch = true
-  
-  tags = {
-    Name = "${var.project_name}-public-subnet-${count.index + 1}-${var.environment}"
-  }
-}
-
-# Internet Gateway
-resource "aws_internet_gateway" "main" {
-  vpc_id = aws_vpc.main.id
-  
-  tags = {
-    Name = "${var.project_name}-igw-${var.environment}"
-  }
-}
-
-# S3 Buckets
-resource "aws_s3_bucket" "data_lake" {
-  bucket = "${var.project_name}-data-lake-${var.environment}"
-  
-  tags = {
-    Name        = "Data Lake"
-    Environment = var.environment
-  }
-}
-
-resource "aws_s3_bucket_versioning" "data_lake" {
-  bucket = aws_s3_bucket.data_lake.id
-  
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket" "artifacts" {
-  bucket = "${var.project_name}-artifacts-${var.environment}"
-  
-  tags = {
-    Name        = "Artifacts"
-    Environment = var.environment
-  }
-}
-
-resource "aws_s3_bucket" "logs" {
-  bucket = "${var.project_name}-logs-${var.environment}"
-  
-  tags = {
-    Name        = "Logs"
-    Environment = var.environment
-  }
-}
-
-# EMR Cluster Security Groups
-resource "aws_security_group" "emr_master" {
-  name        = "${var.project_name}-emr-master-${var.environment}"
-  description = "Security group for EMR master node"
-  vpc_id      = aws_vpc.main.id
-  
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/16"]
-  }
-  
-  ingress {
-    from_port   = 8998
-    to_port     = 8998
-    protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/16"]
-  }
-  
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-  
-  tags = {
-    Name = "${var.project_name}-emr-master-sg-${var.environment}"
-  }
-}
-
-# RDS PostgreSQL for Metadata
-resource "aws_db_instance" "metadata" {
-  identifier             = "${var.project_name}-metadata-${var.environment}"
-  engine                 = "postgres"
-  engine_version         = "15.3"
-  instance_class         = "db.t3.medium"
-  allocated_storage      = 100
-  storage_encrypted      = true
-  db_name                = "metadata"
-  username               = "admin"
-  manage_master_user_password = true
-  vpc_security_group_ids = [aws_security_group.rds.id]
-  db_subnet_group_name   = aws_db_subnet_group.main.name
-  skip_final_snapshot    = var.environment == "dev" ? true : false
-  backup_retention_period = 7
-  
-  tags = {
-    Name = "${var.project_name}-metadata-db-${var.environment}"
-  }
-}
-
-resource "aws_security_group" "rds" {
-  name        = "${var.project_name}-rds-${var.environment}"
-  description = "Security group for RDS"
-  vpc_id      = aws_vpc.main.id
-  
-  ingress {
-    from_port   = 5432
-    to_port     = 5432
-    protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/16"]
-  }
-  
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-resource "aws_db_subnet_group" "main" {
-  name       = "${var.project_name}-db-subnet-${var.environment}"
-  subnet_ids = aws_subnet.private[*].id
-  
-  tags = {
-    Name = "${var.project_name}-db-subnet-group-${var.environment}"
-  }
-}
-
-# Data sources
-data "aws_availability_zones" "available" {
-  state = "available"
-}
-
-# Outputs
-output "vpc_id" {
-  value = aws_vpc.main.id
-}
-
-output "data_lake_bucket" {
-  value = aws_s3_bucket.data_lake.bucket
-}
-
-output "artifacts_bucket" {
-  value = aws_s3_bucket.artifacts.bucket
-}
-
-output "metadata_db_endpoint" {
-  value = aws_db_instance.metadata.endpoint
-}
-"""
-
-# =============================================================================
-# 2. Spark Cluster Configuration (EMR)
-# =============================================================================
-
-EMR_CLUSTER_CONFIG = """
-{
-  "Name": "pyspark-migration-cluster",
-  "ReleaseLabel": "emr-6.14.0",
-  "Applications": [
-    {"Name": "Spark"},
-    {"Name": "Hadoop"},
-    {"Name": "Hive"},
-    {"Name": "Livy"},
-    {"Name": "JupyterEnterpriseGateway"}
-  ],
-  "Configurations": [
-    {
-      "Classification": "spark-defaults",
-      "Properties": {
-        "spark.executor.memory": "8G",
-        "spark.executor.cores": "4",
-        "spark.driver.memory": "4G",
-        "spark.sql.adaptive.enabled": "true",
-        "spark.sql.adaptive.coalescePartitions.enabled": "true",
-        "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
-        "spark.dynamicAllocation.enabled": "true",
-        "spark.shuffle.service.enabled": "true",
-        "spark.sql.parquet.compression.codec": "snappy",
-        "spark.eventLog.enabled": "true",
-        "spark.eventLog.dir": "s3://pyspark-migration-logs-dev/spark-events/"
-      }
-    },
-    {
-      "Classification": "spark-hive-site",
-      "Properties": {
-        "hive.metastore.client.factory.class": "com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory"
-      }
-    }
-  ],
-  "Instances": {
-    "InstanceGroups": [
-      {
-        "Name": "Master",
-        "Market": "ON_DEMAND",
-        "InstanceRole": "MASTER",
-        "InstanceType": "m5.xlarge",
-        "InstanceCount": 1
-      },
-      {
-        "Name": "Core",
-        "Market": "ON_DEMAND",
-        "InstanceRole": "CORE",
-        "InstanceType": "m5.2xlarge",
-        "InstanceCount": 2
-      },
-      {
-        "Name": "Task",
-        "Market": "SPOT",
-        "InstanceRole": "TASK",
-        "InstanceType": "m5.xlarge",
-        "InstanceCount": 2,
-        "BidPrice": "OnDemandPrice"
-      }
-    ],
-    "Ec2KeyName": "emr-key-pair",
-    "KeepJobFlowAliveWhenNoSteps": true,
-    "TerminationProtected": false
-  },
-  "BootstrapActions": [
-    {
-      "Name": "Install Python Dependencies",
-      "ScriptBootstrapAction": {
-        "Path": "s3://pyspark-migration-artifacts-dev/bootstrap/install_dependencies.sh"
-      }
-    }
-  ],
-  "LogUri": "s3://pyspark-migration-logs-dev/cluster-logs/",
-  "JobFlowRole": "EMR_EC2_DefaultRole",
-  "ServiceRole": "EMR_DefaultRole",
-  "VisibleToAllUsers": true,
-  "Tags": [
-    {"Key": "Environment", "Value": "dev"},
-    {"Key": "Project", "Value": "pyspark-migration"}
-  ]
-}
-"""
-
-BOOTSTRAP_SCRIPT = """#!/bin/bash
-# EMR Bootstrap Script for PySpark Migration
-
-set -e
-
-# Update system packages
-sudo yum update -y
-
-# Install Python 3.10
-sudo yum install -y python3.10 python3.10-pip
-
-# Set Python 3.10 as default
-sudo alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
-
-# Upgrade pip
-python3 -m pip install --upgrade pip
-
-# Install required Python packages
-python3 -m pip install \\
-    pyspark==3.5.0 \\
-    pandas==2.0.3 \\
-    pyarrow==13.0.0 \\
-    delta-spark==3.0.0 \\
-    boto3==1.28.0 \\
-    pyyaml==6.0.1 \\
-    pytest==7.4.0 \\
-    pytest-cov==4.1.0 \\
-    great-expectations==0.17.0 \\
-    sqlalchemy==2.0.20 \\
-    psycopg2-binary==2.9.7
-
-# Install monitoring tools
-python3 -m pip install \\
-    prometheus-client==0.17.1 \\
-    py4j==0.10.9.7
-
-# Create necessary directories
-sudo mkdir -p /mnt/logs/spark
-sudo mkdir -p /mnt/tmp
-sudo chmod 777 /mnt/logs/spark
-sudo chmod 777 /mnt/tmp
-
-# Configure environment variables
-cat >> ~/.bashrc << 'EOF'
-export SPARK_HOME=/usr/lib/spark
-export PYTHONPATH=$SPARK_HOME/python:$SPARK_HOME/python/lib/py4j-0.10.9-src.zip:$PYTHONPATH
-export PYSPARK_PYTHON=/usr/bin/python3
-export PYSPARK_DRIVER_PYTHON=/usr/bin/python3
-EOF
-
-echo "Bootstrap completed successfully"
-"""
-
-# =============================================================================
-# 3. Databricks Workspace Configuration (Alternative)
-# =============================================================================
-
-DATABRICKS_TERRAFORM = """
-# Databricks Workspace Configuration
-
-terraform {
-  required_providers {
-    databricks = {
-      source  = "databricks/databricks"
-      version = "~> 1.28"
-    }
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
-}
-
-provider "aws" {
-  region = var.aws_region
-}
-
-provider "databricks" {
-  host  = var.databricks_host
-  token = var.databricks_token
-}
-
-# Workspace Configuration
-resource "databricks_cluster" "migration_cluster" {
-  cluster_name            = "pyspark-migration-cluster"
-  spark_version           = "13.3.x-scala2.12"
-  node_type_id            = "i3.xlarge"
-  driver_node_type_id     = "i3.xlarge"
-  autotermination_minutes = 120
-  autoscale {
-    min_workers = 2
-    max_workers = 8
-  }
-  
-  spark_conf = {
-    "spark.sql.adaptive.enabled"                     = "true"
-    "spark.databricks.delta.preview.enabled"         = "true"
-    "spark.databricks.delta.optimizeWrite.enabled"   = "true"
-    "spark.databricks.delta.autoCompact.enabled"     = "true"
-  }
-  
-  aws_attributes {
-    availability            = "SPOT_WITH_FALLBACK"
-    zone_id                 = "us-east-1a"
-    first_on_demand         = 1
-    spot_bid_price_percent  = 100
-  }
-  
-  library {
-    pypi {
-      package = "delta-spark==3.0.0"
-    }
-  }
-  
-  library {
-    pypi {
-      package = "great-expectations==0.17.0"
-    }
-  }
-}
-
-# Create Workspace Directories
-resource "databricks_directory" "migration_root" {
-  path = "/Workspace/migration"
-}
-
-resource "databricks_directory" "notebooks" {
-  path = "${databricks_directory.migration_root.path}/notebooks"
-}
-
-resource "databricks_directory" "libraries" {
-  path = "${databricks_directory.migration_root.path}/libraries"
-}
-
-# Secret Scopes
-resource "databricks_secret_scope" "migration_secrets" {
-  name = "migration-secrets"
-}
-
-# Mount S3 Buckets
-resource "databricks_mount" "data_lake" {
-  name = "data-lake"
-  
-  s3 {
-    bucket_name = var.data_lake_bucket
-    instance_profile = aws_iam_instance_profile.databricks.arn
-  }
-}
-"""
-
-# =============================================================================
-# 4. Apache Airflow Configuration
-# =============================================================================
-
-AIRFLOW_DOCKER_COMPOSE = """
-version: '3.8'
-
-x-airflow-common: &airflow-common
-  image: apache/airflow:2.7.0-python3.10
-  environment:
-    - AIRFLOW__CORE__EXECUTOR=CeleryExecutor
-    - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
-    - AIRFLOW__CELERY__RESULT_BACKEND=db+postgresql://airflow:airflow@postgres/airflow
-    - AIRFLOW__CELERY__BROKER_URL=redis://:@redis:6379/0
-    - AIRFLOW__CORE__FERNET_KEY=''
-    - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
-    - AIRFLOW__CORE__LOAD_EXAMPLES=false
-    - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth
-    - AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK=true
-    - AWS_DEFAULT_REGION=us-east-1
-    - SPARK_HOME=/usr/local/spark
-  volumes:
-    - ./dags:/opt/airflow/dags
-    - ./logs:/opt/airflow/logs
-    - ./plugins:/opt/airflow/plugins
-    - ./config:/opt/airflow/config
-  user: "${AIRFLOW_UID:-50000}:0"
-  depends_on:
-    redis:
-      condition: service_healthy
-    postgres:
-      condition: service_healthy
-
-services:
-  postgres:
-    image: postgres:15
-    environment:
-      - POSTGRES_USER=airflow
-      - POSTGRES_PASSWORD=airflow
-      - POSTGRES_DB=airflow
-    volumes:
-      - postgres-db-volume:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "airflow"]
-      interval: 10s
-      retries: 5
-      start_period: 5s
-    ports:
-      - "5432:5432"
-
-  redis:
-    image: redis:7.2
-    expose:
-      - 6379
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 30s
-      retries: 50
-      start_period: 30s
-
-  airflow-webserver:
-    <<: *airflow-common
-    command: webserver
-    ports:
-      - "8080:8080"
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-
-  airflow-scheduler:
-    <<: *airflow-common
-    command: scheduler
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-
-  airflow-worker:
-    <<: *airflow-common
-    command: celery worker
-    healthcheck:
-      test:
-        - "CMD-SHELL"
-        - 'celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-
-  airflow-init:
-    <<: *airflow-common
-    entrypoint: /bin/bash
-    command:
-      - -c
-      - |
-        mkdir -p /sources/logs /sources/dags /sources/plugins
-        chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins}
-        exec /entrypoint airflow version
-
-  flower:
-    <<: *airflow-common
-    command: celery flower
-    ports:
-      - "5555:5555"
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:5555/"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-
-volumes:
-  postgres-db-volume:
-"""
-
-AIRFLOW_DAG_SAMPLE = """
-from datetime import datetime, timedelta
-from airflow import DAG
-from airflow.providers.amazon.aws.operators.emr import (
-    EmrCreateJobFlowOperator,
-    EmrAddStepsOperator,
-    EmrTerminateJobFlowOperator
-)
-from airflow.providers.amazon.aws.sensors.emr import EmrStepSensor
-from airflow.operators.python import PythonOperator
-from airflow.utils.dates import days_ago
-
-# Default arguments
-default_args = {
-    'owner': 'data-engineering',
-    'depends_on_past': False,
-    'email': ['alerts@company.com'],
-    'email_on_failure': True,
-    'email_on_retry': False,
-    'retries': 2,
-    'retry_delay': timedelta(minutes=5),
-}
-
-# Spark job configuration
-SPARK_STEPS = [
-    {
-        'Name': 'Sample PySpark Job',
-        'ActionOnFailure': 'CONTINUE',
-        'HadoopJarStep': {
-            'Jar': 'command-runner.jar',
-            'Args': [
-                'spark-submit',
-                '--deploy-mode', 'cluster',
-                '--master', 'yarn',
-                '--conf', 'spark.sql.adaptive.enabled=true',
-                's3://pyspark-migration-artifacts-dev/jobs/sample_job.py',
-                '--date', '{{ ds }}',
-                '--env', 'dev'
-            ]
+class AWSInfrastructureProvisioner:
+    """Provision AWS infrastructure for PySpark migration"""
+    
+    def __init__(self, env_config: EnvironmentConfig):
+        self.env = env_config
+        self.resource_tags = {
+            "Project": "Informatica-PySpark-Migration",
+            "Environment": env_config.env_type,
+            "ManagedBy": "Terraform",
+            "CreatedDate": datetime.utcnow().isoformat()
         }
-    }
-]
-
-# DAG definition
-with DAG(
-    'pyspark_migration_sample',
-    default_args=default_args,
-    description='Sample PySpark migration DAG',
-    schedule_interval='0 6 * * *',
-    start_date=days_ago(1),
-    catchup=False,
-    tags=['pyspark', 'migration', 'sample'],
-) as dag:
     
-    # Task to add Spark job step
-    add_spark_step = EmrAddStepsOperator(
-        task_id='add_spark_step',
-        job_flow_id="{{ var.value.emr_cluster_id }}",
-        steps=SPARK_STEPS,
-        aws_conn_id='aws_default',
-    )
+    def generate_terraform_vpc(self) -> Dict:
+        """Generate Terraform configuration for VPC"""
+        return {
+            "resource": {
+                "aws_vpc": {
+                    f"{self.env.name}_vpc": {
+                        "cidr_block": self.env.vpc_cidr,
+                        "enable_dns_hostnames": True,
+                        "enable_dns_support": True,
+                        "tags": {
+                            **self.resource_tags,
+                            "Name": f"{self.env.name}-vpc"
+                        }
+                    }
+                },
+                "aws_subnet": {
+                    f"{self.env.name}_private_subnet_{i}": {
+                        "vpc_id": f"${{aws_vpc.{self.env.name}_vpc.id}}",
+                        "cidr_block": self._calculate_subnet_cidr(i),
+                        "availability_zone": az,
+                        "tags": {
+                            **self.resource_tags,
+                            "Name": f"{self.env.name}-private-subnet-{i}",
+                            "Type": "Private"
+                        }
+                    }
+                    for i, az in enumerate(self.env.availability_zones)
+                }
+            }
+        }
     
-    # Sensor to wait for step completion
-    watch_spark_step = EmrStepSensor(
-        task_id='watch_spark_step',
-        job_flow_id="{{ var.value.emr_cluster_id }}",
-        step_id="{{ task_instance.xcom_pull(task_ids='add_spark_step', key='return_value')[0] }}",
-        aws_conn_id='aws_default',
-    )
+    def generate_terraform_emr_cluster(self, spark_config: SparkConfig) -> Dict:
+        """Generate Terraform configuration for EMR cluster"""
+        return {
+            "resource": {
+                "aws_emr_cluster": {
+                    f"{self.env.name}_spark_cluster": {
+                        "name": f"{self.env.name}-spark-cluster",
+                        "release_label": f"emr-6.15.0",
+                        "applications": ["Spark", "Hive", "Livy", "JupyterHub"],
+                        "ec2_attributes": {
+                            "subnet_id": f"${{aws_subnet.{self.env.name}_private_subnet_0.id}}",
+                            "emr_managed_master_security_group": f"${{aws_security_group.{self.env.name}_emr_master_sg.id}}",
+                            "emr_managed_slave_security_group": f"${{aws_security_group.{self.env.name}_emr_slave_sg.id}}",
+                            "instance_profile": f"${{aws_iam_instance_profile.{self.env.name}_emr_profile.arn}}"
+                        },
+                        "master_instance_group": {
+                            "instance_type": "m5.2xlarge",
+                            "instance_count": 1
+                        },
+                        "core_instance_group": {
+                            "instance_type": "m5.4xlarge",
+                            "instance_count": spark_config.num_executors if self.env.env_type == "prod" else 2,
+                            "ebs_config": {
+                                "size": 500,
+                                "type": "gp3",
+                                "volumes_per_instance": 2
+                            }
+                        },
+                        "configurations_json": json.dumps([
+                            {
+                                "Classification": "spark-defaults",
+                                "Properties": spark_config.to_spark_conf()
+                            },
+                            {
+                                "Classification": "spark-hive-site",
+                                "Properties": {
+                                    "hive.metastore.client.factory.class": "com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory"
+                                }
+                            }
+                        ]),
+                        "service_role": f"${{aws_iam_role.{self.env.name}_emr_service_role.arn}}",
+                        "autoscaling_role": f"${{aws_iam_role.{self.env.name}_emr_autoscaling_role.arn}}",
+                        "log_uri": f"s3://{self.env.name}-emr-logs/",
+                        "tags": self.resource_tags
+                    }
+                }
+            }
+        }
     
-    # Define task dependencies
-    add_spark_step >> watch_spark_step
-"""
+    def generate_terraform_s3_buckets(self) -> Dict:
+        """Generate Terraform configuration for S3 buckets"""
+        buckets = {
+            "data_lake": f"{self.env.name}-data-lake",
+            "scripts": f"{self.env.name}-spark-scripts",
+            "logs": f"{self.env.name}-emr-logs",
+            "artifacts": f"{self.env.name}-artifacts",
+            "checkpoint": f"{self.env.name}-checkpoint"
+        }
+        
+        return {
+            "resource": {
+                "aws_s3_bucket": {
+                    f"{self.env.name}_{bucket_type}_bucket": {
+                        "bucket": bucket_name,
+                        "tags": {
+                            **self.resource_tags,
+                            "Name": bucket_name,
+                            "Purpose": bucket_type
+                        }
+                    }
+                    for bucket_type, bucket_name in buckets.items()
+                },
+                "aws_s3_bucket_versioning": {
+                    f"{self.env.name}_{bucket_type}_versioning": {
+                        "bucket": f"${{aws_s3_bucket.{self.env.name}_{bucket_type}_bucket.id}}",
+                        "versioning_configuration": {
+                            "status": "Enabled" if self.env.env_type == "prod" else "Suspended"
+                        }
+                    }
+                    for bucket_type in buckets.keys()
+                },
+                "aws_s3_bucket_lifecycle_configuration": {
+                    f"{self.env.name}_{bucket_type}_lifecycle": {
+                        "bucket": f"${{aws_s3_bucket.{self.env.name}_{bucket_type}_bucket.id}}",
+                        "rule": [
+                            {
+                                "id": "archive_old_data",
+                                "status": "Enabled",
+                                "transition": [
+                                    {
+                                        "days": 90,
+                                        "storage_class": "STANDARD_IA"
+                                    },
+                                    {
+                                        "days": 180,
+                                        "storage_class": "GLACIER"
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                    for bucket_type in ["data_lake", "logs"]
+                }
+            }
+        }
+    
+    def _calculate_subnet_cidr(self, index: int) -> str:
+        """Calculate subnet CIDR blocks"""
+        base = self.env.vpc_cidr.split('/')[0]
+        octets = base.split('.')
+        octets[2] = str(int(octets[2]) + index)
+        return f"{'.'.join(octets)}/24"
 
-# =============================================================================
-# 5. Git Repository Structure
-# =============================================================================
 
-GIT_IGNORE = """
-# Python
+# ============================================================================
+# DATABRICKS WORKSPACE SETUP
+# ============================================================================
+
+class DatabricksWorkspaceProvisioner:
+    """Provision Databricks workspace for PySpark migration"""
+    
+    def __init__(self, env_config: EnvironmentConfig):
+        self.env = env_config
+    
+    def generate_terraform_workspace(self) -> Dict:
+        """Generate Terraform configuration for Databricks workspace"""
+        return {
+            "resource": {
+                "databricks_workspace": {
+                    f"{self.env.name}_workspace": {
+                        "name": f"{self.env.name}-databricks-workspace",
+                        "sku": "premium" if self.env.env_type == "prod" else "standard",
+                        "location": self.env.region,
+                        "managed_resource_group_name": f"{self.env.name}-databricks-rg",
+                        "custom_parameters": {
+                            "no_public_ip": self.env.env_type == "prod",
+                            "virtual_network_id": f"${{azurerm_virtual_network.{self.env.name}_vnet.id}}",
+                            "private_subnet_name": f"{self.env.name}-private-subnet",
+                            "public_subnet_name": f"{self.env.name}-public-subnet"
+                        },
+                        "tags": {
+                            "Environment": self.env.env_type,
+                            "Project": "Informatica-Migration"
+                        }
+                    }
+                },
+                "databricks_cluster": {
+                    f"{self.env.name}_cluster": {
+                        "cluster_name": f"{self.env.name}-spark-cluster",
+                        "spark_version": "13.3.x-scala2.12",
+                        "node_type_id": "Standard_DS4_v2" if self.env.env_type != "prod" else "Standard_DS5_v2",
+                        "autoscale": {
+                            "min_workers": 2 if self.env.env_type != "prod" else 5,
+                            "max_workers": 8 if self.env.env_type != "prod" else 50
+                        },
+                        "autotermination_minutes": 30 if self.env.env_type != "prod" else 60,
+                        "spark_conf": {
+                            "spark.databricks.delta.preview.enabled": "true",
+                            "spark.databricks.delta.properties.defaults.autoOptimize.optimizeWrite": "true",
+                            "spark.databricks.delta.properties.defaults.autoOptimize.autoCompact": "true"
+                        },
+                        "custom_tags": {
+                            "Environment": self.env.env_type,
+                            "ManagedBy": "Terraform"
+                        }
+                    }
+                }
+            }
+        }
+    
+    def generate_cluster_policies(self) -> Dict:
+        """Generate cluster policies for different environments"""
+        policies = {
+            "dev": {
+                "spark_version": {"type": "unlimited"},
+                "node_type_id": {"type": "allowlist", "values": ["Standard_DS3_v2", "Standard_DS4_v2"]},
+                "autoscale.max_workers": {"type": "range", "maxValue": 10}
+            },
+            "test": {
+                "spark_version": {"type": "unlimited"},
+                "node_type_id": {"type": "allowlist", "values": ["Standard_DS4_v2", "Standard_DS5_v2"]},
+                "autoscale.max_workers": {"type": "range", "maxValue": 20}
+            },
+            "prod": {
+                "spark_version": {"type": "allowlist", "values": ["13.3.x-scala2.12"]},
+                "node_type_id": {"type": "allowlist", "values": ["Standard_DS5_v2", "Standard_DS14_v2"]},
+                "autoscale.max_workers": {"type": "range", "maxValue": 100}
+            }
+        }
+        return policies.get(self.env.env_type, policies["dev"])
+
+
+# ============================================================================
+# AIRFLOW ORCHESTRATION SETUP
+# ============================================================================
+
+class AirflowOrchestrationSetup:
+    """Setup Apache Airflow for workflow orchestration"""
+    
+    def __init__(self, env_config: EnvironmentConfig):
+        self.env = env_config
+    
+    def generate_docker_compose(self) -> Dict:
+        """Generate docker-compose configuration for Airflow"""
+        return {
+            "version": "3.8",
+            "x-airflow-common": {
+                "image": "apache/airflow:2.8.0-python3.11",
+                "environment": {
+                    "AIRFLOW__CORE__EXECUTOR": "CeleryExecutor",
+                    "AIRFLOW__DATABASE__SQL_ALCHEMY_CONN": f"postgresql+psycopg2://airflow:airflow@postgres/{self.env.name}_airflow",
+                    "AIRFLOW__CELERY__RESULT_BACKEND": f"db+postgresql://airflow:airflow@postgres/{self.env.name}_airflow",
+                    "AIRFLOW__CELERY__BROKER_URL": "redis://:@redis:6379/0",
+                    "AIRFLOW__CORE__FERNET_KEY": "",
+                    "AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION": "true",
+                    "AIRFLOW__CORE__LOAD_EXAMPLES": "false",
+                    "AIRFLOW__API__AUTH_BACKENDS": "airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session",
+                    "AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK": "true",
+                    "_PIP_ADDITIONAL_REQUIREMENTS": "apache-airflow-providers-apache-spark apache-airflow-providers-amazon"
+                },
+                "volumes": [
+                    "./dags:/opt/airflow/dags",
+                    "./logs:/opt/airflow/logs",
+                    "./plugins:/opt/airflow/plugins",
+                    "./config:/opt/airflow/config"
+                ],
+                "user": "50000:0",
+                "depends_on": {
+                    "redis": {"condition": "service_healthy"},
+                    "postgres": {"condition": "service_healthy"}
+                }
+            },
+            "services": {
+                "postgres": {
+                    "image": "postgres:15",
+                    "environment": {
+                        "POSTGRES_USER": "airflow",
+                        "POSTGRES_PASSWORD": "airflow",
+                        "POSTGRES_DB": f"{self.env.name}_airflow"
+                    },
+                    "volumes": ["postgres-db-volume:/var/lib/postgresql/data"],
+                    "healthcheck": {
+                        "test": ["CMD", "pg_isready", "-U", "airflow"],
+                        "interval": "10s",
+                        "retries": 5,
+                        "start_period": "5s"
+                    }
+                },
+                "redis": {
+                    "image": "redis:7.2-alpine",
+                    "healthcheck": {
+                        "test": ["CMD", "redis-cli", "ping"],
+                        "interval": "10s",
+                        "timeout": "30s",
+                        "retries": 50,
+                        "start_period": "30s"
+                    }
+                },
+                "airflow-webserver": {
+                    "extends": {"service": "x-airflow-common"},
+                    "command": "webserver",
+                    "ports": ["8080:8080"],
+                    "healthcheck": {
+                        "test": ["CMD", "curl", "--fail", "http://localhost:8080/health"],
+                        "interval": "30s",
+                        "timeout": "10s",
+                        "retries": 5,
+                        "start_period": "30s"
+                    }
+                },
+                "airflow-scheduler": {
+                    "extends": {"service": "x-airflow-common"},
+                    "command": "scheduler",
+                    "healthcheck": {
+                        "test": ["CMD", "curl", "--fail", "http://localhost:8974/health"],
+                        "interval": "30s",
+                        "timeout": "10s",
+                        "retries": 5,
+                        "start_period": "30s"
+                    }
+                },
+                "airflow-worker": {
+                    "extends": {"service": "x-airflow-common"},
+                    "command": "celery worker",
+                    "healthcheck": {
+                        "test": ["CMD-SHELL", "celery --app airflow.executors.celery_executor.app inspect ping -d celery@$HOSTNAME"],
+                        "interval": "30s",
+                        "timeout": "10s",
+                        "retries": 5,
+                        "start_period": "30s"
+                    }
+                },
+                "airflow-triggerer": {
+                    "extends": {"service": "x-airflow-common"},
+                    "command": "triggerer",
+                    "healthcheck": {
+                        "test": ["CMD-SHELL", "airflow jobs check --job-type TriggererJob --hostname $HOSTNAME"],
+                        "interval": "30s",
+                        "timeout": "10s",
+                        "retries": 5,
+                        "start_period": "30s"
+                    }
+                },
+                "airflow-init": {
+                    "extends": {"service": "x-airflow-common"},
+                    "entrypoint": "/bin/bash",
+                    "command": [
+                        "-c",
+                        "airflow db init && airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin"
+                    ]
+                }
+            },
+            "volumes": {
+                "postgres-db-volume": None
+            }
+        }
+    
+    def generate_airflow_config(self) -> Dict:
+        """Generate Airflow configuration"""
+        return {
+            "core": {
+                "dags_folder": "/opt/airflow/dags",
+                "load_examples": False,
+                "executor": "CeleryExecutor",
+                "parallelism": 32 if self.env.env_type == "prod" else 16,
+                "max_active_tasks_per_dag": 16 if self.env.env_type == "prod" else 8,
+                "max_active_runs_per_dag": 16 if self.env.env_type == "prod" else 4,
+                "default_timezone": "UTC"
+            },
+            "scheduler": {
+                "catchup_by_default": False,
+                "max_tis_per_query": 512,
+                "scheduler_heartbeat_sec": 5,
+                "parsing_processes": 4 if self.env.env_type == "prod" else 2
+            },
+            "webserver": {
+                "expose_config": False,
+                "rbac": True,
+                "default_ui_timezone": "UTC"
+            },
+            "logging": {
+                "remote_logging": True,
+                "remote_base_log_folder": f"s3://{self.env.name}-airflow-logs/",
+                "remote_log_conn_id": "aws_default",
+                "encrypt_s3_logs": True
+            }
+        }
+
+
+# ============================================================================
+# GIT REPOSITORY STRUCTURE
+# ============================================================================
+
+class GitRepositorySetup:
+    """Setup Git repository structure and configuration"""
+    
+    def __init__(self):
+        self.repo_structure = {
+            "src/": {
+                "jobs/": ["__init__.py"],
+                "transformations/": ["__init__.py"],
+                "utils/": ["__init__.py"],
+                "config/": ["__init__.py"]
+            },
+            "tests/": {
+                "unit/": ["__init__.py"],
+                "integration/": ["__init__.py"],
+                "fixtures/": []
+            },
+            "dags/": [],
+            "notebooks/": {
+                "exploration/": [],
+                "validation/": []
+            },
+            "infrastructure/": {
+                "terraform/": ["main.tf", "variables.tf", "outputs.tf"],
+                "docker/": ["Dockerfile"],
+                "kubernetes/": []
+            },
+            "docs/": ["README.md", "ARCHITECTURE.md", "RUNBOOK.md"],
+            "scripts/": ["setup.sh", "deploy.sh"],
+            "configs/": {
+                "dev/": [],
+                "test/": [],
+                "prod/": []
+            }
+        }
+    
+    def generate_gitignore(self) -> str:
+        """Generate .gitignore file content"""
+        return """# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual environments
-venv/
 env/
+venv/
 ENV/
-.venv
+build/
+dist/
+*.egg-info/
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+*.ipynb
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# Spark
+metastore_db/
+derby.log
+spark-warehouse/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+
+# Airflow
+airflow.db
+airflow.cfg
+logs/
+*.pid
 
 # Environment variables
 .env
 .env.local
-*.env
-
-# Terraform
-*.tfstate
-*.tfstate.*
-.terraform/
-.terraform.lock.hcl
-
-# Logs
-*.log
-logs/
+*.secret
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Test coverage
-htmlcov/
-.coverage
+# Testing
 .pytest_cache/
-
-# Spark
-metastore_db/
-spark-warehouse/
-derby.log
+.coverage
+htmlcov/
 """
-
-REPO_STRUCTURE = """
-pyspark-migration/
-├── .github/
-│   └── workflows/
-│       ├── ci.yml
-│       ├── cd-dev.yml
-│       ├── cd-prod.yml
-│       └── quality-checks.yml
-├── terraform/
-│   ├── environments/
-│   │   ├── dev/
-│   │   ├── staging/
-│   │   └── prod/
-│   ├── modules/
-│   │   ├── networking/
-│   │   ├── emr/
-│   │   ├── storage/
-│   │   └── databases/
-│   └── main.tf
-├── airflow/
-│   ├── dags/
-│   ├── plugins/
-│   ├── config/
-│   └── docker-compose.yml
-├── src/
-│   ├── jobs/
-│   │   ├── ingestion/
-│   │   ├── transformation/
-│   │   └── aggregation/
-│   ├── common/
-│   │   ├── config/
-│   │   ├── utils/
-│   │   ├── schemas/
-│   │   └── validators/
-│   └── __init__.py
-├── tests/
-│   ├── unit/
-│   ├── integration/
-│   └── e2e/
-├── notebooks/
-│   ├── exploration/
-│   └── validation/
-├── config/
-│   ├── dev/
-│   ├── staging/
-│   └── prod/
-├── scripts/
-│   ├── deployment/
-│   ├── monitoring/
-│   └── utilities/
-├── docs/
-│   ├── architecture/
-│   ├── runbooks/
-│   └── api/
-├── requirements.txt
-├── setup.py
-├── pytest.ini
-├── .gitignore
-├── .pre-commit-config.yaml
-└── README.md
-"""
-
-# =============================================================================
-# 6. CI/CD Pipeline Configuration (GitHub Actions)
-# =============================================================================
-
-GITHUB_ACTIONS_CI = """
-name: CI Pipeline
-
-on:
-  push:
-    branches: [ develop, main ]
-  pull_request:
-    branches: [ develop, main ]
-
-env:
-  PYTHON_VERSION: '3.10'
-  SPARK_VERSION: '3.5.0'
-
-jobs:
-  code-quality:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install flake8 black isort mypy pylint
-          pip install -r requirements.txt
-      
-      - name: Run Black
-        run: black --check src/ tests/
-      
-      - name: Run isort
-        run: isort --check-only src/ tests/
-      
-      - name: Run Flake8
-        run: flake8 src/ tests/ --max-line-length=100
-      
-      - name: Run Pylint
-        run: pylint src/ --rcfile=.pylintrc
-      
-      - name: Run MyPy
-        run: mypy src/ --ignore-missing-imports
-
-  unit-tests:
-    runs-on: ubuntu-latest
-    needs: code-quality
-    steps:
-      - uses: actions/checkout@v3
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      
-      - name: Set up Java
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'temurin'
-          java-version: '11'
-      
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-cov pytest-spark
-      
-      - name: Run unit tests
-        run: |
-          pytest tests/unit/ --cov=src --cov-report=xml --cov-report=html
-      
-      - name: Upload coverage reports
-        uses: codecov/codecov-action@v3
-        with:
-          file: ./coverage.xml
-          flags: unittests
-          name: codecov-umbrella
-
-  integration-tests:
-    runs-on: ubuntu-latest
-    needs: unit-tests
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: test
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: testdb
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
     
-    steps:
-      - uses: actions/checkout@v3
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      
-      - name: Run integration tests
-        run: pytest tests/integration/ -v
-        env:
-          DB_HOST: localhost
-          DB_PORT: 5432
-          DB_NAME: testdb
-          DB_USER: test
-          DB_PASSWORD: test
+    def generate_github_workflows(self) -> Dict[str, Dict]:
+        """Generate GitHub Actions workflows"""
+        return {
+            "ci.yml": {
+                "name": "CI Pipeline",
+                "on": {
+                    "push": {"branches": ["main", "develop"]},
+                    "pull_request": {"branches": ["main", "develop"]}
+                },
+                "jobs": {
+                    "test": {
+                        "runs-on": "ubuntu-latest",
+                        "steps": [
+                            {"uses": "actions/checkout@v3"},
+                            {
+                                "name": "Set up Python",
+                                "uses": "actions/setup-python@v4",
+                                "with": {"python-version": "3.11"}
+                            },
+                            {
+                                "name": "Install dependencies",
+                                "run": "pip install -r requirements.txt"
+                            },
+                            {
+                                "name": "Run linting",
+                                "run": "flake8 src/ tests/"
+                            },
+                            {
+                                "name": "Run type checking",
+                                "run": "mypy src/"
+                            },
+                            {
+                                "name": "Run unit tests",
+                                "run": "pytest tests/unit/ --cov=src --cov-report=xml"
+                            },
+                            {
+                                "name": "Upload coverage",
+                                "uses": "codecov/codecov-action@v3"
+                            }
+                        ]
+                    },
+                    "integration-test": {
+                        "runs-on": "ubuntu-latest",
+                        "needs": "test",
+                        "steps": [
+                            {"uses": "actions/checkout@v3"},
+                            {
+                                "name": "Set up Python",
+                                "uses": "actions/setup-python@v4",
+                                "with": {"python-version": "3.11"}
+                            },
+                            {
+                                "name": "Install dependencies",
+                                "run": "pip install -r requirements.txt"
+                            },
+                            {
+                                "name": "Run integration tests",
+                                "run": "pytest tests/integration/"
+                            }
+                        ]
+                    }
+                }
+            },
+            "deploy.yml": {
+                "name": "Deploy Pipeline",
+                "on": {
+                    "push": {"branches": ["main"]},
+                    "workflow_dispatch": None
+                },
+                "jobs": {
+                    "deploy-dev": {
+                        "runs-on": "ubuntu-latest",
+                        "environment": "development",
+                        "steps": [
+                            {"uses": "actions/checkout@v3"},
+                            {
+                                "name": "Configure AWS credentials",
+                                "uses": "aws-actions/configure-aws-credentials@v2",
+                                "with": {
+                                    "aws-access-key-id": "${{ secrets.AWS_ACCESS_KEY_ID }}",
+                                    "aws-secret-access-key": "${{ secrets.AWS_SECRET_ACCESS_KEY }}",
+                                    "aws-region": "us-east-1"
+                                }
+                            },
+                            {
+                                "name": "Deploy to S3",
+                                "run": "aws s3 sync src/ s3://dev-spark-scripts/src/"
+                            },
+                            {
+                                "name": "Trigger Airflow DAG",
+                                "run": "curl -X POST http://airflow-dev:8080/api/v1/dags/migration_dag/dagRuns"
+                            }
+                        ]
+                    },
+                    "deploy-prod": {
+                        "runs-on": "ubuntu-latest",
+                        "environment": "production",
+                        "needs": "deploy-dev",
+                        "steps": [
+                            {"uses": "actions/checkout@v3"},
+                            {
+                                "name": "Configure AWS credentials",
+                                "uses": "aws-actions/configure-aws-credentials@v2",
+                                "with": {
+                                    "aws-access-key-id": "${{ secrets.AWS_ACCESS_KEY_ID }}",
+                                    "aws-secret-access-key": "${{ secrets.AWS_SECRET_ACCESS_KEY }}",
+                                    "aws-region": "us-east-1"
+                                }
+                            },
+                            {
+                                "name": "Deploy to S3",
+                                "run": "aws s3 sync src/ s3://prod-spark-scripts/src/"
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    
+    def generate_branching_strategy_doc(self) -> str:
+        """Generate branching strategy documentation"""
+        return """# Git Branching Strategy
 
-  build-artifact:
-    runs-on: ubuntu-latest
-    needs: [unit-tests, integration-tests]
-    steps:
-      - uses: actions/checkout@v3
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      
-      - name: Build wheel
-        run: |
-          python -m pip install --upgrade pip build
-          python -m build
-      
-      - name: Upload artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: pyspark-migration-package
-          path: dist/
+## Branch Types
+
+### Main Branches
+- **main**: Production-ready code. Protected branch with required reviews.
+- **develop**: Integration branch for features. Protected branch.
+
+### Supporting Branches
+- **feature/**: New features (feature/TICKET-123-description)
+- **bugfix/**: Bug fixes (bugfix/TICKET-123-description)
+- **hotfix/**: Production hotfixes (hotfix/TICKET-123-description)
+- **release/**: Release preparation (release/v1.0.0)
+
+## Workflow
+
+1. Create feature branch from develop
+2. Develop and test locally
+3. Submit PR to develop
+4. Code review and automated tests
+5. Merge to develop after approval
+6. Create release branch from develop
+7. Deploy to test environment
+8. Merge release to main and tag
+9. Deploy to production
+
+## Commit Message Format
+
+```
+<type>(<scope>): <subject>
+
+<body>
+
+<footer>
+```
+
+Types: feat, fix, docs, style, refactor, test, chore
+
+## Pull Request Requirements
+
+- All tests passing
+- Code coverage > 80%
+- At least one approval
+- No merge conflicts
+- Up to date with base branch
 """
 
-GITHUB_ACTIONS_CD = """
-name: CD Pipeline - Deploy to Dev
 
-on:
-  push:
-    branches: [ develop ]
-  workflow_dispatch:
+# ============================================================================
+# MONITORING AND LOGGING SETUP
+# ============================================================================
 
-env:
-  AWS_REGION: us-east-1
-  ENVIRONMENT: dev
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
+class MonitoringSetup:
+    """Setup monitoring and logging infrastructure"""
     
-    steps:
-      - uses: actions/checkout@v3
-      
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-      
-      - name: Build package
-        run: |
-          python -m pip install --upgrade pip build
-          python -m build
-      
-      - name: Upload to S3
-        run: |
-          aws s3 cp dist/ s3://pyspark-migration-artifacts-${{ env.ENVIRONMENT }}/packages/
+    def __init__(self, env_config: EnvironmentConfig):
+        self.env = env_config
+    
+    def generate_prometheus_config(self) -> Dict:
+        """Generate Prometheus configuration"""
+        return {
+            "global": {
+                "scrape_interval": "15s",
+                "evaluation_interval": "15s",
+                "external_labels": {
+                    "environment": self.env.env_type,
+                    "cluster": f"{self.env.name}-spark"
+                }
+            },
+            "alerting": {
+                "alertmanagers": [
+                    {
+                        "static_configs": [
+                            {"targets": ["alertmanager:9093"]}
+                        ]
+                    }
+                ]
+            },
+            "rule_files": [
+                "spark_alerts.yml",
+                "airflow_alerts.yml"
+            ],
+            "scrape_configs": [
+                {
+                    "job_name": "spark-master",
+                    "static_configs": [
+                        {"targets": ["spark-master:4040"]}
+                    ]
+                },
+                {
+                    "job_name": "spark-workers",
+                    "static_configs": [
+                        {"targets": ["spark-worker:4040"]}
+                    ]
+                },
+                {
+                    "job_name": "airflow",
+                    "static_configs": [
+                        {"targets": ["airflow-webserver:8080"]}
+                    ]
+                },
+                {
+                    "job_name": "node-exporter",
+                    "static_configs": [
+                        {"targets": ["node-exporter:9100"]}
+                    ]
+                }
+            ]
+        }
+    
+    def generate_grafana_dashboards(self) -> Dict[str, Dict]:
+        """Generate Grafana dashboard configurations"""
+        return {
+            "spark_monitoring.json
