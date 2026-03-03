@@ -1,0 +1,70 @@
+# Informatica Connection Parameters
+# Configure database and file system connections
+
+# Database Connections
+[Source_DB]
+DBType=Oracle
+DBHost=source-db.company.com
+DBPort=1521
+DBServiceName=SRCDB
+DBUsername=src_user
+DBPassword=<encrypted>
+ConnectionPoolSize=10
+
+[Target_DW]
+DBType=Oracle
+DBHost=datawarehouse.company.com
+DBPort=1521
+DBServiceName=DWDB
+DBUsername=dw_user
+DBPassword=<encrypted>
+ConnectionPoolSize=20
+EnableBulkLoad=YES
+
+[Control_DB]
+DBType=Oracle
+DBHost=datawarehouse.company.com
+DBPort=1521
+DBServiceName=DWDB
+DBUsername=etl_control
+DBPassword=<encrypted>
+
+# File System Connections
+[Source_File_System]
+FileDirectory=/data/etl/source_files
+FileArchiveDir=/data/etl/archive
+FileErrorDir=/data/etl/error
+
+[Target_File_System]
+FileDirectory=/data/etl/target_files
+ReportDirectory=/data/etl/reports
+
+# FTP Connections (if applicable)
+[FTP_Source]
+FTPHost=ftp.company.com
+FTPPort=21
+FTPUsername=ftp_user
+FTPPassword=<encrypted>
+FTPRemoteDir=/incoming/sales
+FTPUseSSL=YES
+
+# Email Configuration
+[Email_Config]
+SMTPServer=smtp.company.com
+SMTPPort=25
+FromAddress=informatica-etl@company.com
+ToAddress=etl-team@company.com
+UseAuthentication=NO
+
+# Logging and Monitoring
+[Logging]
+LogLevel=INFO
+MaxLogFileSize=100MB
+LogRetentionDays=30
+
+# Performance Tuning
+[Performance]
+DefaultCommitInterval=10000
+MaxPartitions=4
+CacheSize=AUTO
+EnablePushdownOptimization=YES

@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Informatica Mapping: m_LOAD_SALES_FACT -->
+<!-- Purpose: Load Sales Fact Table with calculations -->
+<!-- Author: ETL Team -->
+<!-- Date: 2026-03-03 -->
+
+<MAPPING NAME="m_LOAD_SALES_FACT" DESCRIPTION="Load Sales Fact Table" ISVALID="YES">
+
+    <!-- Source Qualifier -->
+    <TRANSFORMATION NAME="SQ_STG_SALES" TYPE="Source Qualifier" DESCRIPTION="Read sales transactions from staging">
+        <TABLEATTRIBUTE NAME="SQL Query">
+            <![CDATA[
+            SELECT
+                TRANSACTION_ID,
+                TRANSACTION_DATE,
+                CUSTOMER_ID,
+                PRODUCT_ID,
+                QUANTITY,
+                UNIT_PRICE,
+                DISCOUNT_PERCENT,
+                TAX_AMOUNT,
+                TOTAL_AMOUNT,
+                PAYMENT_METHOD,
+                STORE_ID,
+                REGION,
+                SOURCE_SYSTEM
+            FROM STG_SALES
+            WHERE LOAD_DATE >= $$LAST_EXTRACT_DATE
+            ORDER BY TRANSACTION_DATE
+            ]]>
+        </TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="User Defined Join">INNER JOIN</TABLEATTRIBUTE>
+    </TRANSFORMATION>
+
+    <!-- Expression for Date Key calculation -->
+    <TRANSFORMATION NAME="EXP_DATE_KEY" TYPE="Expression" DESCRIPTION="Calculate date key">
+        <TRANSFORMFIELD NAME="DATE_KEY" EXPRESSION="TO_NUMBER(TO_CHAR(TRANSACTION_DATE, 'YYYYMMDD'))"/>
+        <TRANSFORMFIELD NAME="TRANSACTION_DATE_ONLY" EXPRESSION="TRUNC(TRANSACTION_DATE)"/>
+    </TRANSFORMATION>
+
+    <!-- Lookup Customer Key -->
+    <TRANSFORMATION NAME="LKP_CUSTOMER_KEY" TYPE="Lookup" DESCRIPTION="Get customer surrogate key">
+        <TABLEATTRIBUTE NAME="Lookup Table">DIM_CUSTOMER</TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="Lookup Condition">
+            CUSTOMER_ID = CUSTOMER_ID
+            AND IS_CURRENT = 'Y'
+            AND TRANSACTION_DATE BETWEEN EFFECTIVE_FROM_DATE AND EFFECTIVE_TO_DATE
+        </TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="Return Fields">CUSTOMER_KEY</TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="Cache">PERSISTENT</TABLEATTRIBUTE>
+    </TRANSFORMATION>
+
+    <!-- Lookup Product Key -->
+    <TRANSFORMATION NAME="LKP_PRODUCT_KEY" TYPE="Lookup" DESCRIPTION="Get product surrogate key">
+        <TABLEATTRIBUTE NAME="Lookup Table">DIM_PRODUCT</TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="Lookup Condition">PRODUCT_ID = PRODUCT_ID</TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="Return Fields">PRODUCT_KEY, COST_PRICE</TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="Cache">PERSISTENT</TABLEATTRIBUTE>
+    </TRANSFORMATION>
+
+    <!-- Expression for calculations -->
+    <TRANSFORMATION NAME="EXP_CALCULATE_MEASURES" TYPE="Expression" DESCRIPTION="Calculate business metrics">
+        <TRANSFORMFIELD NAME="SALES_KEY" EXPRESSION="SEQ_SALES_KEY.NEXTVAL"/>
+        <TRANSFORMFIELD NAME="DISCOUNT_AMOUNT" EXPRESSION="ROUND((UNIT_PRICE * QUANTITY * DISCOUNT_PERCENT / 100), 2)"/>
+        <TRANSFORMFIELD NAME="COST_AMOUNT" EXPRESSION="ROUND((LKP_COST_PRICE * QUANTITY), 2)"/>
+        <TRANSFORMFIELD NAME="PROFIT_AMOUNT" EXPRESSION="ROUND((TOTAL_AMOUNT - TAX_AMOUNT - COST_AMOUNT), 2)"/>
+        <TRANSFORMFIELD NAME="PROFIT_MARGIN_PERCENT" EXPRESSION="
+            IIF((TOTAL_AMOUNT - TAX_AMOUNT) > 0,
+                ROUND((PROFIT_AMOUNT / (TOTAL_AMOUNT - TAX_AMOUNT) * 100), 2),
+                0)"/>
+        <TRANSFORMFIELD NAME="LOAD_TIMESTAMP" EXPRESSION="SYSDATE"/>
+    </TRANSFORMATION>
+
+    <!-- Filter out invalid records -->
+    <TRANSFORMATION NAME="FIL_VALID_RECORDS" TYPE="Filter" DESCRIPTION="Filter valid transactions only">
+        <TABLEATTRIBUTE NAME="Filter Condition">
+            NOT ISNULL(CUSTOMER_KEY)
+            AND NOT ISNULL(PRODUCT_KEY)
+            AND QUANTITY > 0
+            AND TOTAL_AMOUNT > 0
+        </TABLEATTRIBUTE>
+    </TRANSFORMATION>
+
+    <!-- Aggregator for duplicate check (optional) -->
+    <TRANSFORMATION NAME="AGG_DEDUPLICATE" TYPE="Aggregator" DESCRIPTION="Remove duplicates if any">
+        <TABLEATTRIBUTE NAME="Group By">TRANSACTION_ID</TABLEATTRIBUTE>
+        <TRANSFORMFIELD NAME="FIRST_RECORD" EXPRESSION="FIRST(SALES_KEY)"/>
+    </TRANSFORMATION>
+
+    <!-- Update Strategy -->
+    <TRANSFORMATION NAME="UPD_INSERT" TYPE="Update Strategy" DESCRIPTION="Insert new records">
+        <TABLEATTRIBUTE NAME="Update Strategy Expression">DD_INSERT</TABLEATTRIBUTE>
+    </TRANSFORMATION>
+
+    <!-- Sequence Generator for Surrogate Key -->
+    <TRANSFORMATION NAME="SEQ_SALES_KEY" TYPE="Sequence Generator" DESCRIPTION="Generate surrogate keys">
+        <TABLEATTRIBUTE NAME="Start Value">1</TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="Increment By">1</TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="Cycle">NO</TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="Cache">1000</TABLEATTRIBUTE>
+    </TRANSFORMATION>
+
+    <!-- Target Definition -->
+    <TARGET NAME="FACT_SALES" TYPE="Table" LOADTYPE="Bulk">
+        <TARGETFIELD NAME="SALES_KEY"/>
+        <TARGETFIELD NAME="TRANSACTION_ID"/>
+        <TARGETFIELD NAME="DATE_KEY"/>
+        <TARGETFIELD NAME="CUSTOMER_KEY"/>
+        <TARGETFIELD NAME="PRODUCT_KEY"/>
+        <TARGETFIELD NAME="STORE_ID"/>
+        <TARGETFIELD NAME="REGION"/>
+        <TARGETFIELD NAME="QUANTITY"/>
+        <TARGETFIELD NAME="UNIT_PRICE"/>
+        <TARGETFIELD NAME="DISCOUNT_PERCENT"/>
+        <TARGETFIELD NAME="DISCOUNT_AMOUNT"/>
+        <TARGETFIELD NAME="TAX_AMOUNT"/>
+        <TARGETFIELD NAME="TOTAL_AMOUNT"/>
+        <TARGETFIELD NAME="COST_AMOUNT"/>
+        <TARGETFIELD NAME="PROFIT_AMOUNT"/>
+        <TARGETFIELD NAME="PROFIT_MARGIN_PERCENT"/>
+        <TARGETFIELD NAME="PAYMENT_METHOD"/>
+        <TARGETFIELD NAME="LOAD_DATE"/>
+        <TARGETFIELD NAME="SOURCE_SYSTEM"/>
+        <TABLEATTRIBUTE NAME="Commit Interval">10000</TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="Enable Bulk Load">YES</TABLEATTRIBUTE>
+    </TARGET>
+
+    <!-- Error Handling -->
+    <TARGET NAME="ERROR_LOG" TYPE="Table" LOADTYPE="Normal">
+        <TABLEATTRIBUTE NAME="Reject File">$PMBadFileDir/FACT_SALES_reject_$$SESS_START_TIME.txt</TABLEATTRIBUTE>
+    </TARGET>
+
+</MAPPING>

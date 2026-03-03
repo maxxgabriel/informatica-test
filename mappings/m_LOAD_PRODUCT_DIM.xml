@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Informatica Mapping: m_LOAD_PRODUCT_DIM -->
+<!-- Purpose: Load Product Dimension with SCD Type 1 -->
+<!-- Author: ETL Team -->
+<!-- Date: 2026-03-03 -->
+
+<MAPPING NAME="m_LOAD_PRODUCT_DIM" DESCRIPTION="Load Product Dimension with SCD Type 1" ISVALID="YES">
+
+    <!-- Source Qualifier -->
+    <TRANSFORMATION NAME="SQ_STG_PRODUCT" TYPE="Source Qualifier" DESCRIPTION="Read from product staging table">
+        <TABLEATTRIBUTE NAME="SQL Query">
+            <![CDATA[
+            SELECT
+                PRODUCT_ID,
+                PRODUCT_NAME,
+                PRODUCT_DESCRIPTION,
+                CATEGORY,
+                SUB_CATEGORY,
+                BRAND,
+                UNIT_PRICE,
+                COST_PRICE,
+                SUPPLIER_ID,
+                SUPPLIER_NAME,
+                WEIGHT,
+                DIMENSIONS,
+                COLOR,
+                SIZE,
+                MATERIAL,
+                STATUS,
+                SOURCE_SYSTEM
+            FROM STG_PRODUCT
+            WHERE LOAD_DATE >= $$LAST_EXTRACT_DATE
+            ]]>
+        </TABLEATTRIBUTE>
+    </TRANSFORMATION>
+
+    <!-- Expression Transformation for data cleansing -->
+    <TRANSFORMATION NAME="EXP_CLEANSE_PRODUCT" TYPE="Expression" DESCRIPTION="Cleanse and standardize product data">
+        <TRANSFORMFIELD NAME="PRODUCT_ID" EXPRESSION="PRODUCT_ID"/>
+        <TRANSFORMFIELD NAME="PRODUCT_NAME_CLEAN" EXPRESSION="INITCAP(LTRIM(RTRIM(PRODUCT_NAME)))"/>
+        <TRANSFORMFIELD NAME="PRODUCT_DESC_CLEAN" EXPRESSION="LTRIM(RTRIM(PRODUCT_DESCRIPTION))"/>
+        <TRANSFORMFIELD NAME="CATEGORY_CLEAN" EXPRESSION="UPPER(LTRIM(RTRIM(CATEGORY)))"/>
+        <TRANSFORMFIELD NAME="SUB_CATEGORY_CLEAN" EXPRESSION="UPPER(LTRIM(RTRIM(SUB_CATEGORY)))"/>
+        <TRANSFORMFIELD NAME="BRAND_CLEAN" EXPRESSION="INITCAP(LTRIM(RTRIM(BRAND)))"/>
+        <TRANSFORMFIELD NAME="UNIT_PRICE_CLEAN" EXPRESSION="ROUND(UNIT_PRICE, 2)"/>
+        <TRANSFORMFIELD NAME="COST_PRICE_CLEAN" EXPRESSION="ROUND(COST_PRICE, 2)"/>
+        <TRANSFORMFIELD NAME="SUPPLIER_NAME_CLEAN" EXPRESSION="INITCAP(LTRIM(RTRIM(SUPPLIER_NAME)))"/>
+        <TRANSFORMFIELD NAME="STATUS_CLEAN" EXPRESSION="UPPER(STATUS)"/>
+        <TRANSFORMFIELD NAME="PROFIT_MARGIN" EXPRESSION="
+            IIF(UNIT_PRICE > 0,
+                ROUND(((UNIT_PRICE - COST_PRICE) / UNIT_PRICE * 100), 2),
+                0)"/>
+        <TRANSFORMFIELD NAME="PRICE_RANGE" EXPRESSION="
+            IIF(UNIT_PRICE < 50, 'LOW',
+                IIF(UNIT_PRICE < 200, 'MEDIUM',
+                    IIF(UNIT_PRICE < 500, 'HIGH', 'PREMIUM')))"/>
+        <TRANSFORMFIELD NAME="CURRENT_TIMESTAMP" EXPRESSION="SYSDATE"/>
+    </TRANSFORMATION>
+
+    <!-- Lookup Transformation to check existing records -->
+    <TRANSFORMATION NAME="LKP_DIM_PRODUCT" TYPE="Lookup" DESCRIPTION="Lookup existing product records">
+        <TABLEATTRIBUTE NAME="Lookup Table">DIM_PRODUCT</TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="Lookup Condition">PRODUCT_ID = PRODUCT_ID</TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="Return Fields">
+            PRODUCT_KEY,
+            PRODUCT_NAME,
+            CATEGORY,
+            UNIT_PRICE,
+            STATUS,
+            UPDATED_DATE
+        </TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="Cache">PERSISTENT</TABLEATTRIBUTE>
+    </TRANSFORMATION>
+
+    <!-- Expression for SCD Type 1 logic -->
+    <TRANSFORMATION NAME="EXP_SCD_TYPE1" TYPE="Expression" DESCRIPTION="Determine insert or update for SCD Type 1">
+        <TRANSFORMFIELD NAME="IS_NEW_RECORD" EXPRESSION="IIF(ISNULL(LKP_PRODUCT_KEY), 1, 0)"/>
+        <TRANSFORMFIELD NAME="IS_CHANGED" EXPRESSION="
+            IIF(IS_NEW_RECORD = 1, 0,
+                IIF(PRODUCT_NAME_CLEAN != LKP_PRODUCT_NAME OR
+                    CATEGORY_CLEAN != LKP_CATEGORY OR
+                    UNIT_PRICE_CLEAN != LKP_UNIT_PRICE OR
+                    STATUS_CLEAN != LKP_STATUS, 1, 0))"/>
+        <TRANSFORMFIELD NAME="PRODUCT_KEY_OUT" EXPRESSION="IIF(IS_NEW_RECORD = 1, SEQ_PRODUCT_KEY.NEXTVAL, LKP_PRODUCT_KEY)"/>
+        <TRANSFORMFIELD NAME="UPDATE_FLAG" EXPRESSION="IIF(IS_CHANGED = 1, 1, 0)"/>
+    </TRANSFORMATION>
+
+    <!-- Router Transformation to split records -->
+    <TRANSFORMATION NAME="RTR_INSERT_UPDATE" TYPE="Router" DESCRIPTION="Route records for insert or update">
+        <GROUP NAME="NEW_RECORDS" EXPRESSION="IS_NEW_RECORD = 1"/>
+        <GROUP NAME="UPDATED_RECORDS" EXPRESSION="IS_CHANGED = 1"/>
+        <GROUP NAME="NO_CHANGE" EXPRESSION="IS_NEW_RECORD = 0 AND IS_CHANGED = 0"/>
+    </TRANSFORMATION>
+
+    <!-- Update Strategy for new records -->
+    <TRANSFORMATION NAME="UPD_INSERT_NEW" TYPE="Update Strategy" DESCRIPTION="Insert new products">
+        <TABLEATTRIBUTE NAME="Update Strategy Expression">DD_INSERT</TABLEATTRIBUTE>
+    </TRANSFORMATION>
+
+    <!-- Update Strategy for existing records -->
+    <TRANSFORMATION NAME="UPD_UPDATE_EXISTING" TYPE="Update Strategy" DESCRIPTION="Update existing products">
+        <TABLEATTRIBUTE NAME="Update Strategy Expression">DD_UPDATE</TABLEATTRIBUTE>
+        <TRANSFORMFIELD NAME="UPDATED_DATE" EXPRESSION="SYSDATE"/>
+    </TRANSFORMATION>
+
+    <!-- Sequence Generator for Product Key -->
+    <TRANSFORMATION NAME="SEQ_PRODUCT_KEY" TYPE="Sequence Generator" DESCRIPTION="Generate surrogate keys">
+        <TABLEATTRIBUTE NAME="Start Value">1</TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="Increment By">1</TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="Cycle">NO</TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="Cache">1000</TABLEATTRIBUTE>
+    </TRANSFORMATION>
+
+    <!-- Filter for data quality -->
+    <TRANSFORMATION NAME="FIL_VALID_PRODUCTS" TYPE="Filter" DESCRIPTION="Filter valid products only">
+        <TABLEATTRIBUTE NAME="Filter Condition">
+            NOT ISNULL(PRODUCT_ID)
+            AND NOT ISNULL(PRODUCT_NAME_CLEAN)
+            AND NOT ISNULL(CATEGORY_CLEAN)
+            AND UNIT_PRICE_CLEAN >= 0
+            AND COST_PRICE_CLEAN >= 0
+        </TABLEATTRIBUTE>
+    </TRANSFORMATION>
+
+    <!-- Target Definition -->
+    <TARGET NAME="DIM_PRODUCT" TYPE="Table" LOADTYPE="Normal">
+        <TARGETFIELD NAME="PRODUCT_KEY"/>
+        <TARGETFIELD NAME="PRODUCT_ID"/>
+        <TARGETFIELD NAME="PRODUCT_NAME"/>
+        <TARGETFIELD NAME="PRODUCT_DESCRIPTION"/>
+        <TARGETFIELD NAME="CATEGORY"/>
+        <TARGETFIELD NAME="SUB_CATEGORY"/>
+        <TARGETFIELD NAME="BRAND"/>
+        <TARGETFIELD NAME="UNIT_PRICE"/>
+        <TARGETFIELD NAME="COST_PRICE"/>
+        <TARGETFIELD NAME="PROFIT_MARGIN"/>
+        <TARGETFIELD NAME="PRICE_RANGE"/>
+        <TARGETFIELD NAME="SUPPLIER_ID"/>
+        <TARGETFIELD NAME="SUPPLIER_NAME"/>
+        <TARGETFIELD NAME="WEIGHT"/>
+        <TARGETFIELD NAME="DIMENSIONS"/>
+        <TARGETFIELD NAME="COLOR"/>
+        <TARGETFIELD NAME="SIZE"/>
+        <TARGETFIELD NAME="MATERIAL"/>
+        <TARGETFIELD NAME="STATUS"/>
+        <TARGETFIELD NAME="CREATED_DATE"/>
+        <TARGETFIELD NAME="UPDATED_DATE"/>
+        <TARGETFIELD NAME="SOURCE_SYSTEM"/>
+        <TABLEATTRIBUTE NAME="Update Key">PRODUCT_KEY</TABLEATTRIBUTE>
+    </TARGET>
+
+</MAPPING>

@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Informatica Workflow: wf_DAILY_SALES_LOAD -->
+<!-- Purpose: Daily incremental load of sales data -->
+<!-- Schedule: Daily at 2:00 AM -->
+
+<WORKFLOW NAME="wf_DAILY_SALES_LOAD" DESCRIPTION="Daily Sales Load Workflow" ISVALID="YES" SERVERNAME="IntegrationService">
+
+    <!-- Workflow Variables -->
+    <WORKFLOWVARIABLE>
+        <WORKFLOWVARIABLENAME="$$LAST_EXTRACT_DATE" DATATYPE="date/time" DEFAULTVALUE="SYSDATE-1" ISUSERDEF="YES"/>
+        <WORKFLOWVARIABLENAME="$$CURRENT_EXTRACT_DATE" DATATYPE="date/time" DEFAULTVALUE="SYSDATE" ISUSERDEF="YES"/>
+        <WORKFLOWVARIABLENAME="$$SOURCE_FILE_PATH" DATATYPE="string" DEFAULTVALUE="$PMSourceFileDir/" ISUSERDEF="YES"/>
+        <WORKFLOWVARIABLENAME="$$ERROR_EMAIL_TO" DATATYPE="string" DEFAULTVALUE="etl-team@company.com" ISUSERDEF="YES"/>
+    </WORKFLOWVARIABLE>
+
+    <!-- Task 1: Start Task -->
+    <START_TASK NAME="START" DESCRIPTION="Workflow start"/>
+
+    <!-- Task 2: Command Task - Pre-process -->
+    <COMMAND_TASK NAME="CMD_PRE_PROCESS" DESCRIPTION="Pre-process and validation">
+        <COMMAND>$PMRootDir/scripts/pre_process.sh $$SOURCE_FILE_PATH</COMMAND>
+        <SUCCESS_EMAIL_OPTION>NEVER</SUCCESS_EMAIL_OPTION>
+        <FAIL_EMAIL_OPTION>ON_FAILURE</FAIL_EMAIL_OPTION>
+        <FAIL_EMAIL_ADDRESS>$$ERROR_EMAIL_TO</FAIL_EMAIL_ADDRESS>
+    </COMMAND_TASK>
+
+    <!-- Task 3: Session - Load Staging Tables -->
+    <SESSION NAME="s_LOAD_STG_CUSTOMER" DESCRIPTION="Load customer staging" MAPPINGNAME="m_LOAD_STG_CUSTOMER" REUSABLE="NO">
+        <SESSTRANSFORMATIONINST TRANSFORMATIONNAME="SRC_CUSTOMER" SOURCETYPE="File">
+            <ATTRIBUTE NAME="Source File Directory" VALUE="$$SOURCE_FILE_PATH"/>
+            <ATTRIBUTE NAME="Source File Name" VALUE="customer_master.csv"/>
+            <ATTRIBUTE NAME="File Type" VALUE="Delimited"/>
+            <ATTRIBUTE NAME="Delimiter" VALUE=","/>
+            <ATTRIBUTE NAME="Header Options" VALUE="Ignore"/>
+        </SESSTRANSFORMATIONINST>
+        <CONFIGREFERENCE REFOBJECTNAME="default_session_config" TYPE="Session Configuration"/>
+        <SESSIONEXTENSION NAME="Relational Writer" TYPE="Target">
+            <ATTRIBUTE NAME="Target Load Type" VALUE="Normal"/>
+            <ATTRIBUTE NAME="Commit Type" VALUE="Target"/>
+            <ATTRIBUTE NAME="Commit Interval" VALUE="10000"/>
+        </SESSIONEXTENSION>
+    </SESSION>
+
+    <SESSION NAME="s_LOAD_STG_PRODUCT" DESCRIPTION="Load product staging" MAPPINGNAME="m_LOAD_STG_PRODUCT" REUSABLE="NO">
+        <SESSTRANSFORMATIONINST TRANSFORMATIONNAME="SRC_PRODUCT" SOURCETYPE="File">
+            <ATTRIBUTE NAME="Source File Directory" VALUE="$$SOURCE_FILE_PATH"/>
+            <ATTRIBUTE NAME="Source File Name" VALUE="product_master.csv"/>
+        </SESSTRANSFORMATIONINST>
+    </SESSION>
+
+    <SESSION NAME="s_LOAD_STG_SALES" DESCRIPTION="Load sales staging" MAPPINGNAME="m_LOAD_STG_SALES" REUSABLE="NO">
+        <SESSTRANSFORMATIONINST TRANSFORMATIONNAME="SRC_SALES" SOURCETYPE="File">
+            <ATTRIBUTE NAME="Source File Directory" VALUE="$$SOURCE_FILE_PATH"/>
+            <ATTRIBUTE NAME="Source File Name" VALUE="sales_transactions_*.csv"/>
+            <ATTRIBUTE NAME="Source File Pattern" VALUE="sales_transactions_[0-9]*.csv"/>
+        </SESSTRANSFORMATIONINST>
+    </SESSION>
+
+    <!-- Task 4: Decision Task - Check staging load -->
+    <DECISION_TASK NAME="DEC_STAGING_SUCCESS" DESCRIPTION="Verify staging load">
+        <CONDITION>$s_LOAD_STG_CUSTOMER.Status = SUCCEEDED AND $s_LOAD_STG_PRODUCT.Status = SUCCEEDED AND $s_LOAD_STG_SALES.Status = SUCCEEDED</CONDITION>
+    </DECISION_TASK>
+
+    <!-- Task 5: Session - Load Dimensions -->
+    <SESSION NAME="s_LOAD_CUSTOMER_DIM" DESCRIPTION="Load customer dimension" MAPPINGNAME="m_LOAD_CUSTOMER_DIM" REUSABLE="NO">
+        <SESSIONEXTENSION NAME="Relational Reader" TYPE="Source">
+            <ATTRIBUTE NAME="SQL Query" VALUE="SELECT * FROM STG_CUSTOMER WHERE LOAD_DATE >= $$LAST_EXTRACT_DATE"/>
+        </SESSIONEXTENSION>
+        <SESSIONEXTENSION NAME="Relational Writer" TYPE="Target">
+            <ATTRIBUTE NAME="Target Load Type" VALUE="Normal"/>
+            <ATTRIBUTE NAME="Insert" VALUE="YES"/>
+            <ATTRIBUTE NAME="Update as Update" VALUE="YES"/>
+            <ATTRIBUTE NAME="Update Key" VALUE="CUSTOMER_KEY"/>
+        </SESSIONEXTENSION>
+        <ATTRIBUTE NAME="Treat source rows as" VALUE="Insert"/>
+    </SESSION>
+
+    <SESSION NAME="s_LOAD_PRODUCT_DIM" DESCRIPTION="Load product dimension" MAPPINGNAME="m_LOAD_PRODUCT_DIM" REUSABLE="NO">
+        <SESSIONEXTENSION NAME="Relational Writer" TYPE="Target">
+            <ATTRIBUTE NAME="Target Load Type" VALUE="Bulk"/>
+        </SESSIONEXTENSION>
+    </SESSION>
+
+    <!-- Task 6: Session - Load Fact Table -->
+    <SESSION NAME="s_LOAD_SALES_FACT" DESCRIPTION="Load sales fact" MAPPINGNAME="m_LOAD_SALES_FACT" REUSABLE="NO">
+        <SESSIONEXTENSION NAME="Relational Writer" TYPE="Target">
+            <ATTRIBUTE NAME="Target Load Type" VALUE="Bulk"/>
+            <ATTRIBUTE NAME="Commit Interval" VALUE="50000"/>
+        </SESSIONEXTENSION>
+        <ATTRIBUTE NAME="Partitioning" VALUE="YES"/>
+        <ATTRIBUTE NAME="Partition Count" VALUE="4"/>
+        <ATTRIBUTE NAME="Partition Type" VALUE="Hash Auto-Keys"/>
+    </SESSION>
+
+    <!-- Task 7: Command Task - Data Quality Checks -->
+    <COMMAND_TASK NAME="CMD_DATA_QUALITY" DESCRIPTION="Run data quality checks">
+        <COMMAND>$PMRootDir/scripts/data_quality_check.sh</COMMAND>
+    </COMMAND_TASK>
+
+    <!-- Task 8: Email Task - Success Notification -->
+    <EMAIL_TASK NAME="EMAIL_SUCCESS" DESCRIPTION="Send success notification">
+        <EMAIL_TO>$$ERROR_EMAIL_TO</EMAIL_TO>
+        <EMAIL_SUBJECT>Daily Sales Load Completed Successfully</EMAIL_SUBJECT>
+        <EMAIL_BODY>
+            Workflow: wf_DAILY_SALES_LOAD
+            Status: SUCCESS
+            Start Time: $s_LOAD_SALES_FACT.StartTime
+            End Time: $s_LOAD_SALES_FACT.EndTime
+            Rows Loaded: $s_LOAD_SALES_FACT.TgtSuccessRows
+        </EMAIL_BODY>
+    </EMAIL_TASK>
+
+    <!-- Task 9: Email Task - Failure Notification -->
+    <EMAIL_TASK NAME="EMAIL_FAILURE" DESCRIPTION="Send failure notification">
+        <EMAIL_TO>$$ERROR_EMAIL_TO</EMAIL_TO>
+        <EMAIL_SUBJECT>ALERT: Daily Sales Load FAILED</EMAIL_SUBJECT>
+        <EMAIL_BODY>
+            Workflow: wf_DAILY_SALES_LOAD
+            Status: FAILED
+            Please check logs for details.
+        </EMAIL_BODY>
+    </EMAIL_TASK>
+
+    <!-- Workflow Links -->
+    <TASKINSTANCE NAME="START" REUSABLE="NO" TYPE="Start">
+        <LINK TOINSTANCE="CMD_PRE_PROCESS" CONDITION="UNCONDITIONAL"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="CMD_PRE_PROCESS" REUSABLE="NO" TYPE="Command">
+        <LINK TOINSTANCE="s_LOAD_STG_CUSTOMER" CONDITION="SUCCEEDED"/>
+        <LINK TOINSTANCE="s_LOAD_STG_PRODUCT" CONDITION="SUCCEEDED"/>
+        <LINK TOINSTANCE="s_LOAD_STG_SALES" CONDITION="SUCCEEDED"/>
+        <LINK TOINSTANCE="EMAIL_FAILURE" CONDITION="FAILED"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="s_LOAD_STG_CUSTOMER" REUSABLE="NO" TYPE="Session">
+        <LINK TOINSTANCE="DEC_STAGING_SUCCESS" CONDITION="UNCONDITIONAL"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="DEC_STAGING_SUCCESS" REUSABLE="NO" TYPE="Decision">
+        <LINK TOINSTANCE="s_LOAD_CUSTOMER_DIM" CONDITION="TRUE"/>
+        <LINK TOINSTANCE="EMAIL_FAILURE" CONDITION="FALSE"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="s_LOAD_CUSTOMER_DIM" REUSABLE="NO" TYPE="Session">
+        <LINK TOINSTANCE="s_LOAD_PRODUCT_DIM" CONDITION="SUCCEEDED"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="s_LOAD_PRODUCT_DIM" REUSABLE="NO" TYPE="Session">
+        <LINK TOINSTANCE="s_LOAD_SALES_FACT" CONDITION="SUCCEEDED"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="s_LOAD_SALES_FACT" REUSABLE="NO" TYPE="Session">
+        <LINK TOINSTANCE="CMD_DATA_QUALITY" CONDITION="SUCCEEDED"/>
+        <LINK TOINSTANCE="EMAIL_FAILURE" CONDITION="FAILED"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="CMD_DATA_QUALITY" REUSABLE="NO" TYPE="Command">
+        <LINK TOINSTANCE="EMAIL_SUCCESS" CONDITION="SUCCEEDED"/>
+        <LINK TOINSTANCE="EMAIL_FAILURE" CONDITION="FAILED"/>
+    </TASKINSTANCE>
+
+    <!-- Scheduler -->
+    <SCHEDULER NAME="daily_schedule" DESCRIPTION="Run daily at 2 AM">
+        <SCHEDULE_TYPE>REPEAT</SCHEDULE_TYPE>
+        <START_DATE>2026-03-01</START_DATE>
+        <START_TIME>02:00:00</START_TIME>
+        <REPEAT_TYPE>DAILY</REPEAT_TYPE>
+        <REPEAT_INTERVAL>1</REPEAT_INTERVAL>
+    </SCHEDULER>
+
+</WORKFLOW>

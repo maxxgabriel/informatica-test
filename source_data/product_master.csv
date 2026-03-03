@@ -1,0 +1,13 @@
+PRODUCT_ID,PRODUCT_NAME,CATEGORY,SUB_CATEGORY,BRAND,UNIT_PRICE,COST_PRICE,SUPPLIER_ID,STOCK_QUANTITY,PRODUCT_STATUS
+P1001,Laptop Pro 15,Electronics,Computers,TechBrand,1299.99,899.99,S001,150,Active
+P1002,Wireless Mouse,Electronics,Accessories,TechBrand,29.99,12.99,S001,500,Active
+P1003,Office Chair,Furniture,Seating,ComfortCo,249.99,120.00,S002,75,Active
+P1004,Standing Desk,Furniture,Desks,ComfortCo,499.99,250.00,S002,40,Active
+P1005,LED Monitor 27,Electronics,Monitors,TechBrand,349.99,180.00,S001,200,Active
+P1006,Mechanical Keyboard,Electronics,Accessories,TechBrand,89.99,40.00,S001,300,Active
+P1007,Desk Lamp,Furniture,Lighting,LightCo,39.99,15.00,S003,250,Active
+P1008,Notebook Set,Stationery,Paper Products,WriteCo,12.99,5.00,S004,1000,Active
+P1009,Ergonomic Mouse Pad,Electronics,Accessories,TechBrand,19.99,8.00,S001,400,Active
+P1010,Filing Cabinet,Furniture,Storage,ComfortCo,179.99,90.00,S002,60,Active
+P1011,USB-C Hub,Electronics,Accessories,TechBrand,49.99,22.00,S001,350,Active
+P1012,Whiteboard,Office Supplies,Presentation,OfficePro,129.99,60.00,S003,80,Active

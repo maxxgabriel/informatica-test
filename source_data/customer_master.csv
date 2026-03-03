@@ -1,0 +1,11 @@
+CUSTOMER_ID,FIRST_NAME,LAST_NAME,EMAIL,PHONE,ADDRESS,CITY,STATE,ZIP_CODE,COUNTRY,REGISTRATION_DATE,CUSTOMER_TYPE
+1001,John,Smith,john.smith@email.com,555-0101,123 Main St,New York,NY,10001,USA,2024-01-15,Premium
+1002,Emily,Johnson,emily.j@email.com,555-0102,456 Oak Ave,Los Angeles,CA,90001,USA,2024-02-20,Standard
+1003,Michael,Williams,m.williams@email.com,555-0103,789 Pine Rd,Chicago,IL,60601,USA,2024-03-10,Premium
+1004,Sarah,Brown,sarah.b@email.com,555-0104,321 Elm St,Houston,TX,77001,USA,2024-01-25,Standard
+1005,David,Jones,david.jones@email.com,555-0105,654 Maple Dr,Phoenix,AZ,85001,USA,2024-04-05,Gold
+1006,Jessica,Garcia,j.garcia@email.com,555-0106,987 Cedar Ln,Philadelphia,PA,19101,USA,2024-02-14,Premium
+1007,James,Martinez,james.m@email.com,555-0107,147 Birch Way,San Antonio,TX,78201,USA,2024-03-22,Standard
+1008,Lisa,Rodriguez,lisa.r@email.com,555-0108,258 Spruce Ct,San Diego,CA,92101,USA,2024-01-30,Premium
+1009,Robert,Hernandez,robert.h@email.com,555-0109,369 Willow Pl,Dallas,TX,75201,USA,2024-04-12,Gold
+1010,Maria,Lopez,maria.lopez@email.com,555-0110,741 Ash Blvd,San Jose,CA,95101,USA,2024-02-28,Standard

@@ -1,0 +1,295 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Informatica Workflow: wf_FULL_REFRESH -->
+<!-- Purpose: Monthly full refresh of data warehouse -->
+<!-- Schedule: First day of month at 12:00 AM -->
+
+<WORKFLOW NAME="wf_FULL_REFRESH" DESCRIPTION="Monthly Full Refresh Workflow" ISVALID="YES" SERVERNAME="IntegrationService">
+
+    <!-- Workflow Variables -->
+    <WORKFLOWVARIABLE>
+        <WORKFLOWVARIABLENAME="$$REFRESH_START_DATE" DATATYPE="date/time" DEFAULTVALUE="SYSDATE" ISUSERDEF="YES"/>
+        <WORKFLOWVARIABLENAME="$$SOURCE_FILE_PATH" DATATYPE="string" DEFAULTVALUE="$PMSourceFileDir/" ISUSERDEF="YES"/>
+        <WORKFLOWVARIABLENAME="$$ARCHIVE_PATH" DATATYPE="string" DEFAULTVALUE="$PMArchiveDir/" ISUSERDEF="YES"/>
+        <WORKFLOWVARIABLENAME="$$ERROR_EMAIL_TO" DATATYPE="string" DEFAULTVALUE="etl-team@company.com" ISUSERDEF="YES"/>
+        <WORKFLOWVARIABLENAME="$$DBA_EMAIL" DATATYPE="string" DEFAULTVALUE="dba-team@company.com" ISUSERDEF="YES"/>
+        <WORKFLOWVARIABLENAME="$$MANAGER_EMAIL" DATATYPE="string" DEFAULTVALUE="manager@company.com" ISUSERDEF="YES"/>
+    </WORKFLOWVARIABLE>
+
+    <!-- Task 1: Start Task -->
+    <START_TASK NAME="START" DESCRIPTION="Workflow start"/>
+
+    <!-- Task 2: Command Task - Pre-refresh validation -->
+    <COMMAND_TASK NAME="CMD_PRE_REFRESH_CHECK" DESCRIPTION="Validate system readiness">
+        <COMMAND>$PMRootDir/scripts/pre_refresh_validation.sh</COMMAND>
+        <SUCCESS_EMAIL_OPTION>NEVER</SUCCESS_EMAIL_OPTION>
+        <FAIL_EMAIL_OPTION>ON_FAILURE</FAIL_EMAIL_OPTION>
+        <FAIL_EMAIL_ADDRESS>$$DBA_EMAIL</FAIL_EMAIL_ADDRESS>
+    </COMMAND_TASK>
+
+    <!-- Task 3: Command Task - Full backup -->
+    <COMMAND_TASK NAME="CMD_FULL_BACKUP" DESCRIPTION="Complete database backup before refresh">
+        <COMMAND>$PMRootDir/scripts/full_backup.sh $$ARCHIVE_PATH</COMMAND>
+        <FAIL_EMAIL_ADDRESS>$$DBA_EMAIL</FAIL_EMAIL_ADDRESS>
+    </COMMAND_TASK>
+
+    <!-- Task 4: Command Task - Disable constraints -->
+    <COMMAND_TASK NAME="CMD_DISABLE_CONSTRAINTS" DESCRIPTION="Disable foreign key constraints">
+        <COMMAND>$PMRootDir/scripts/disable_constraints.sh</COMMAND>
+    </COMMAND_TASK>
+
+    <!-- Task 5: Command Task - Truncate staging tables -->
+    <COMMAND_TASK NAME="CMD_TRUNCATE_STAGING" DESCRIPTION="Truncate all staging tables">
+        <COMMAND>$PMRootDir/scripts/truncate_staging.sh</COMMAND>
+    </COMMAND_TASK>
+
+    <!-- Task 6: Session - Full load staging tables -->
+    <SESSION NAME="s_FULL_LOAD_STG_CUSTOMER" DESCRIPTION="Full customer load" MAPPINGNAME="m_LOAD_STG_CUSTOMER" REUSABLE="NO">
+        <SESSTRANSFORMATIONINST TRANSFORMATIONNAME="SRC_CUSTOMER" SOURCETYPE="File">
+            <ATTRIBUTE NAME="Source File Directory" VALUE="$$SOURCE_FILE_PATH"/>
+            <ATTRIBUTE NAME="Source File Name" VALUE="customer_master.csv"/>
+        </SESSTRANSFORMATIONINST>
+        <SESSIONEXTENSION NAME="Relational Writer" TYPE="Target">
+            <ATTRIBUTE NAME="Target Load Type" VALUE="Bulk"/>
+            <ATTRIBUTE NAME="Commit Interval" VALUE="100000"/>
+        </SESSIONEXTENSION>
+    </SESSION>
+
+    <SESSION NAME="s_FULL_LOAD_STG_PRODUCT" DESCRIPTION="Full product load" MAPPINGNAME="m_LOAD_STG_PRODUCT" REUSABLE="NO">
+        <SESSTRANSFORMATIONINST TRANSFORMATIONNAME="SRC_PRODUCT" SOURCETYPE="File">
+            <ATTRIBUTE NAME="Source File Directory" VALUE="$$SOURCE_FILE_PATH"/>
+            <ATTRIBUTE NAME="Source File Name" VALUE="product_master.csv"/>
+        </SESSTRANSFORMATIONINST>
+        <SESSIONEXTENSION NAME="Relational Writer" TYPE="Target">
+            <ATTRIBUTE NAME="Target Load Type" VALUE="Bulk"/>
+        </SESSIONEXTENSION>
+    </SESSION>
+
+    <SESSION NAME="s_FULL_LOAD_STG_SALES" DESCRIPTION="Full sales load" MAPPINGNAME="m_LOAD_STG_SALES" REUSABLE="NO">
+        <SESSTRANSFORMATIONINST TRANSFORMATIONNAME="SRC_SALES" SOURCETYPE="File">
+            <ATTRIBUTE NAME="Source File Directory" VALUE="$$SOURCE_FILE_PATH"/>
+            <ATTRIBUTE NAME="Source File Name" VALUE="sales_transactions_*.csv"/>
+            <ATTRIBUTE NAME="Source File Pattern" VALUE="sales_transactions_*.csv"/>
+        </SESSTRANSFORMATIONINST>
+        <SESSIONEXTENSION NAME="Relational Writer" TYPE="Target">
+            <ATTRIBUTE NAME="Target Load Type" VALUE="Bulk"/>
+            <ATTRIBUTE NAME="Commit Interval" VALUE="100000"/>
+        </SESSIONEXTENSION>
+    </SESSION>
+
+    <!-- Task 7: Decision Task -->
+    <DECISION_TASK NAME="DEC_STAGING_COMPLETE" DESCRIPTION="Verify all staging loads succeeded">
+        <CONDITION>
+            $s_FULL_LOAD_STG_CUSTOMER.Status = SUCCEEDED AND
+            $s_FULL_LOAD_STG_PRODUCT.Status = SUCCEEDED AND
+            $s_FULL_LOAD_STG_SALES.Status = SUCCEEDED
+        </CONDITION>
+    </DECISION_TASK>
+
+    <!-- Task 8: Command Task - Truncate dimensions -->
+    <COMMAND_TASK NAME="CMD_TRUNCATE_DIMENSIONS" DESCRIPTION="Truncate dimension tables for full refresh">
+        <COMMAND>$PMRootDir/scripts/truncate_dimensions.sh</COMMAND>
+    </COMMAND_TASK>
+
+    <!-- Task 9: Session - Full refresh dimensions -->
+    <SESSION NAME="s_FULL_REFRESH_CUSTOMER_DIM" DESCRIPTION="Full customer dimension refresh" MAPPINGNAME="m_LOAD_CUSTOMER_DIM" REUSABLE="NO">
+        <SESSIONEXTENSION NAME="Relational Writer" TYPE="Target">
+            <ATTRIBUTE NAME="Target Load Type" VALUE="Bulk"/>
+            <ATTRIBUTE NAME="Commit Interval" VALUE="50000"/>
+        </SESSIONEXTENSION>
+        <ATTRIBUTE NAME="Partitioning" VALUE="YES"/>
+        <ATTRIBUTE NAME="Partition Count" VALUE="4"/>
+    </SESSION>
+
+    <SESSION NAME="s_FULL_REFRESH_PRODUCT_DIM" DESCRIPTION="Full product dimension refresh" MAPPINGNAME="m_LOAD_PRODUCT_DIM" REUSABLE="NO">
+        <SESSIONEXTENSION NAME="Relational Writer" TYPE="Target">
+            <ATTRIBUTE NAME="Target Load Type" VALUE="Bulk"/>
+        </SESSIONEXTENSION>
+    </SESSION>
+
+    <!-- Task 10: Command Task - Truncate fact table -->
+    <COMMAND_TASK NAME="CMD_TRUNCATE_FACT" DESCRIPTION="Truncate fact table for full refresh">
+        <COMMAND>$PMRootDir/scripts/truncate_fact_tables.sh</COMMAND>
+    </COMMAND_TASK>
+
+    <!-- Task 11: Session - Full refresh fact table -->
+    <SESSION NAME="s_FULL_REFRESH_SALES_FACT" DESCRIPTION="Full sales fact refresh" MAPPINGNAME="m_LOAD_SALES_FACT" REUSABLE="NO">
+        <SESSIONEXTENSION NAME="Relational Writer" TYPE="Target">
+            <ATTRIBUTE NAME="Target Load Type" VALUE="Bulk"/>
+            <ATTRIBUTE NAME="Commit Interval" VALUE="100000"/>
+        </SESSIONEXTENSION>
+        <ATTRIBUTE NAME="Partitioning" VALUE="YES"/>
+        <ATTRIBUTE NAME="Partition Count" VALUE="8"/>
+        <ATTRIBUTE NAME="Partition Type" VALUE="Hash Auto-Keys"/>
+    </SESSION>
+
+    <!-- Task 12: Command Task - Enable constraints -->
+    <COMMAND_TASK NAME="CMD_ENABLE_CONSTRAINTS" DESCRIPTION="Re-enable foreign key constraints">
+        <COMMAND>$PMRootDir/scripts/enable_constraints.sh</COMMAND>
+    </COMMAND_TASK>
+
+    <!-- Task 13: Command Task - Rebuild all indexes -->
+    <COMMAND_TASK NAME="CMD_REBUILD_ALL_INDEXES" DESCRIPTION="Rebuild all table indexes">
+        <COMMAND>$PMRootDir/scripts/rebuild_all_indexes.sh</COMMAND>
+    </COMMAND_TASK>
+
+    <!-- Task 14: Command Task - Update all statistics -->
+    <COMMAND_TASK NAME="CMD_UPDATE_ALL_STATS" DESCRIPTION="Update database statistics">
+        <COMMAND>$PMRootDir/scripts/update_all_statistics.sh</COMMAND>
+    </COMMAND_TASK>
+
+    <!-- Task 15: Command Task - Data reconciliation -->
+    <COMMAND_TASK NAME="CMD_RECONCILIATION" DESCRIPTION="Reconcile source vs target counts">
+        <COMMAND>$PMRootDir/scripts/data_reconciliation.sh</COMMAND>
+    </COMMAND_TASK>
+
+    <!-- Task 16: Command Task - Generate refresh report -->
+    <COMMAND_TASK NAME="CMD_GENERATE_REPORT" DESCRIPTION="Generate full refresh summary report">
+        <COMMAND>$PMRootDir/scripts/generate_refresh_report.sh $$REFRESH_START_DATE</COMMAND>
+    </COMMAND_TASK>
+
+    <!-- Task 17: Email Task - Success Notification -->
+    <EMAIL_TASK NAME="EMAIL_SUCCESS" DESCRIPTION="Send detailed success notification">
+        <EMAIL_TO>$$ERROR_EMAIL_TO</EMAIL_TO>
+        <EMAIL_CC>$$MANAGER_EMAIL</EMAIL_CC>
+        <EMAIL_SUBJECT>Monthly Full Refresh Completed Successfully</EMAIL_SUBJECT>
+        <EMAIL_BODY>
+            Workflow: wf_FULL_REFRESH
+            Status: SUCCESS
+            Start Time: $START.StartTime
+            End Time: $CMD_GENERATE_REPORT.EndTime
+            Duration: $START.EndTime - $START.StartTime
+
+            STAGING LOADS:
+            - Customer records: $s_FULL_LOAD_STG_CUSTOMER.TgtSuccessRows
+            - Product records: $s_FULL_LOAD_STG_PRODUCT.TgtSuccessRows
+            - Sales records: $s_FULL_LOAD_STG_SALES.TgtSuccessRows
+
+            DIMENSION LOADS:
+            - Customer dimension: $s_FULL_REFRESH_CUSTOMER_DIM.TgtSuccessRows
+            - Product dimension: $s_FULL_REFRESH_PRODUCT_DIM.TgtSuccessRows
+
+            FACT LOADS:
+            - Sales fact: $s_FULL_REFRESH_SALES_FACT.TgtSuccessRows
+
+            All tables refreshed successfully.
+            Full refresh report attached.
+        </EMAIL_BODY>
+    </EMAIL_TASK>
+
+    <!-- Task 18: Email Task - Failure Notification -->
+    <EMAIL_TASK NAME="EMAIL_FAILURE" DESCRIPTION="Send critical failure notification">
+        <EMAIL_TO>$$ERROR_EMAIL_TO</EMAIL_TO>
+        <EMAIL_CC>$$DBA_EMAIL,$$MANAGER_EMAIL</EMAIL_CC>
+        <EMAIL_SUBJECT>CRITICAL: Monthly Full Refresh FAILED</EMAIL_SUBJECT>
+        <EMAIL_BODY>
+            Workflow: wf_FULL_REFRESH
+            Status: FAILED
+            Time: $START.StartTime
+
+            CRITICAL: Full refresh has failed!
+
+            Database backup is available at: $$ARCHIVE_PATH
+            Please review logs and initiate recovery procedures.
+
+            Contact DBA team immediately.
+        </EMAIL_BODY>
+    </EMAIL_TASK>
+
+    <!-- Workflow Links -->
+    <TASKINSTANCE NAME="START" REUSABLE="NO" TYPE="Start">
+        <LINK TOINSTANCE="CMD_PRE_REFRESH_CHECK" CONDITION="UNCONDITIONAL"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="CMD_PRE_REFRESH_CHECK" REUSABLE="NO" TYPE="Command">
+        <LINK TOINSTANCE="CMD_FULL_BACKUP" CONDITION="SUCCEEDED"/>
+        <LINK TOINSTANCE="EMAIL_FAILURE" CONDITION="FAILED"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="CMD_FULL_BACKUP" REUSABLE="NO" TYPE="Command">
+        <LINK TOINSTANCE="CMD_DISABLE_CONSTRAINTS" CONDITION="SUCCEEDED"/>
+        <LINK TOINSTANCE="EMAIL_FAILURE" CONDITION="FAILED"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="CMD_DISABLE_CONSTRAINTS" REUSABLE="NO" TYPE="Command">
+        <LINK TOINSTANCE="CMD_TRUNCATE_STAGING" CONDITION="SUCCEEDED"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="CMD_TRUNCATE_STAGING" REUSABLE="NO" TYPE="Command">
+        <LINK TOINSTANCE="s_FULL_LOAD_STG_CUSTOMER" CONDITION="SUCCEEDED"/>
+        <LINK TOINSTANCE="s_FULL_LOAD_STG_PRODUCT" CONDITION="SUCCEEDED"/>
+        <LINK TOINSTANCE="s_FULL_LOAD_STG_SALES" CONDITION="SUCCEEDED"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="s_FULL_LOAD_STG_CUSTOMER" REUSABLE="NO" TYPE="Session">
+        <LINK TOINSTANCE="DEC_STAGING_COMPLETE" CONDITION="UNCONDITIONAL"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="s_FULL_LOAD_STG_PRODUCT" REUSABLE="NO" TYPE="Session">
+        <LINK TOINSTANCE="DEC_STAGING_COMPLETE" CONDITION="UNCONDITIONAL"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="s_FULL_LOAD_STG_SALES" REUSABLE="NO" TYPE="Session">
+        <LINK TOINSTANCE="DEC_STAGING_COMPLETE" CONDITION="UNCONDITIONAL"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="DEC_STAGING_COMPLETE" REUSABLE="NO" TYPE="Decision">
+        <LINK TOINSTANCE="CMD_TRUNCATE_DIMENSIONS" CONDITION="TRUE"/>
+        <LINK TOINSTANCE="EMAIL_FAILURE" CONDITION="FALSE"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="CMD_TRUNCATE_DIMENSIONS" REUSABLE="NO" TYPE="Command">
+        <LINK TOINSTANCE="s_FULL_REFRESH_CUSTOMER_DIM" CONDITION="SUCCEEDED"/>
+        <LINK TOINSTANCE="s_FULL_REFRESH_PRODUCT_DIM" CONDITION="SUCCEEDED"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="s_FULL_REFRESH_CUSTOMER_DIM" REUSABLE="NO" TYPE="Session">
+        <LINK TOINSTANCE="CMD_TRUNCATE_FACT" CONDITION="SUCCEEDED"/>
+        <LINK TOINSTANCE="EMAIL_FAILURE" CONDITION="FAILED"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="s_FULL_REFRESH_PRODUCT_DIM" REUSABLE="NO" TYPE="Session">
+        <LINK TOINSTANCE="CMD_TRUNCATE_FACT" CONDITION="SUCCEEDED"/>
+        <LINK TOINSTANCE="EMAIL_FAILURE" CONDITION="FAILED"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="CMD_TRUNCATE_FACT" REUSABLE="NO" TYPE="Command">
+        <LINK TOINSTANCE="s_FULL_REFRESH_SALES_FACT" CONDITION="SUCCEEDED"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="s_FULL_REFRESH_SALES_FACT" REUSABLE="NO" TYPE="Session">
+        <LINK TOINSTANCE="CMD_ENABLE_CONSTRAINTS" CONDITION="SUCCEEDED"/>
+        <LINK TOINSTANCE="EMAIL_FAILURE" CONDITION="FAILED"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="CMD_ENABLE_CONSTRAINTS" REUSABLE="NO" TYPE="Command">
+        <LINK TOINSTANCE="CMD_REBUILD_ALL_INDEXES" CONDITION="SUCCEEDED"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="CMD_REBUILD_ALL_INDEXES" REUSABLE="NO" TYPE="Command">
+        <LINK TOINSTANCE="CMD_UPDATE_ALL_STATS" CONDITION="SUCCEEDED"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="CMD_UPDATE_ALL_STATS" REUSABLE="NO" TYPE="Command">
+        <LINK TOINSTANCE="CMD_RECONCILIATION" CONDITION="SUCCEEDED"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="CMD_RECONCILIATION" REUSABLE="NO" TYPE="Command">
+        <LINK TOINSTANCE="CMD_GENERATE_REPORT" CONDITION="SUCCEEDED"/>
+        <LINK TOINSTANCE="EMAIL_FAILURE" CONDITION="FAILED"/>
+    </TASKINSTANCE>
+
+    <TASKINSTANCE NAME="CMD_GENERATE_REPORT" REUSABLE="NO" TYPE="Command">
+        <LINK TOINSTANCE="EMAIL_SUCCESS" CONDITION="SUCCEEDED"/>
+    </TASKINSTANCE>
+
+    <!-- Scheduler -->
+    <SCHEDULER NAME="monthly_schedule" DESCRIPTION="Run on first day of month at midnight">
+        <SCHEDULE_TYPE>REPEAT</SCHEDULE_TYPE>
+        <START_DATE>2026-04-01</START_DATE>
+        <START_TIME>00:00:00</START_TIME>
+        <REPEAT_TYPE>MONTHLY</REPEAT_TYPE>
+        <REPEAT_INTERVAL>1</REPEAT_INTERVAL>
+        <REPEAT_DAY>1</REPEAT_DAY>
+    </SCHEDULER>
+
+</WORKFLOW>

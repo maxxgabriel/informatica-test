@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Informatica Mapping: m_LOAD_STG_CUSTOMER -->
+<!-- Purpose: Load customer data from CSV to staging table -->
+<!-- Author: ETL Team -->
+<!-- Date: 2026-03-03 -->
+
+<MAPPING NAME="m_LOAD_STG_CUSTOMER" DESCRIPTION="Load Customer Staging Table" ISVALID="YES">
+
+    <!-- Source Definition - File -->
+    <SOURCE NAME="SRC_CUSTOMER" TYPE="Flat File" DESCRIPTION="Customer master CSV file">
+        <SOURCEFIELD NAME="CUSTOMER_ID" DATATYPE="string" LENGTH="20"/>
+        <SOURCEFIELD NAME="FIRST_NAME" DATATYPE="string" LENGTH="50"/>
+        <SOURCEFIELD NAME="LAST_NAME" DATATYPE="string" LENGTH="50"/>
+        <SOURCEFIELD NAME="EMAIL" DATATYPE="string" LENGTH="100"/>
+        <SOURCEFIELD NAME="PHONE" DATATYPE="string" LENGTH="20"/>
+        <SOURCEFIELD NAME="ADDRESS" DATATYPE="string" LENGTH="200"/>
+        <SOURCEFIELD NAME="CITY" DATATYPE="string" LENGTH="50"/>
+        <SOURCEFIELD NAME="STATE" DATATYPE="string" LENGTH="2"/>
+        <SOURCEFIELD NAME="ZIP_CODE" DATATYPE="string" LENGTH="10"/>
+        <SOURCEFIELD NAME="COUNTRY" DATATYPE="string" LENGTH="50"/>
+        <SOURCEFIELD NAME="REGISTRATION_DATE" DATATYPE="date/time"/>
+        <SOURCEFIELD NAME="CUSTOMER_TYPE" DATATYPE="string" LENGTH="20"/>
+    </SOURCE>
+
+    <!-- Source Qualifier -->
+    <TRANSFORMATION NAME="SQ_SRC_CUSTOMER" TYPE="Source Qualifier" DESCRIPTION="Read customer file">
+        <TABLEATTRIBUTE NAME="Select All Fields">YES</TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="Tracing Level">Normal</TABLEATTRIBUTE>
+    </TRANSFORMATION>
+
+    <!-- Expression for adding metadata -->
+    <TRANSFORMATION NAME="EXP_ADD_METADATA" TYPE="Expression" DESCRIPTION="Add load metadata">
+        <TRANSFORMFIELD NAME="LOAD_DATE" EXPRESSION="SYSDATE"/>
+        <TRANSFORMFIELD NAME="SOURCE_SYSTEM" EXPRESSION="'CSV_FILE'"/>
+        <TRANSFORMFIELD NAME="RECORD_ID" EXPRESSION="SEQ_RECORD_ID.NEXTVAL"/>
+    </TRANSFORMATION>
+
+    <!-- Sequence Generator -->
+    <TRANSFORMATION NAME="SEQ_RECORD_ID" TYPE="Sequence Generator" DESCRIPTION="Generate record IDs">
+        <TABLEATTRIBUTE NAME="Start Value">1</TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="Increment By">1</TABLEATTRIBUTE>
+        <TABLEATTRIBUTE NAME="Cycle">NO</TABLEATTRIBUTE>
+    </TRANSFORMATION>
+
+    <!-- Target Definition -->
+    <TARGET NAME="STG_CUSTOMER" TYPE="Table" LOADTYPE="Normal">
+        <TARGETFIELD NAME="RECORD_ID"/>
+        <TARGETFIELD NAME="CUSTOMER_ID"/>
+        <TARGETFIELD NAME="FIRST_NAME"/>
+        <TARGETFIELD NAME="LAST_NAME"/>
+        <TARGETFIELD NAME="EMAIL"/>
+        <TARGETFIELD NAME="PHONE"/>
+        <TARGETFIELD NAME="ADDRESS"/>
+        <TARGETFIELD NAME="CITY"/>
+        <TARGETFIELD NAME="STATE"/>
+        <TARGETFIELD NAME="ZIP_CODE"/>
+        <TARGETFIELD NAME="COUNTRY"/>
+        <TARGETFIELD NAME="REGISTRATION_DATE"/>
+        <TARGETFIELD NAME="CUSTOMER_TYPE"/>
+        <TARGETFIELD NAME="LOAD_DATE"/>
+        <TARGETFIELD NAME="SOURCE_SYSTEM"/>
+    </TARGET>
+
+</MAPPING>
