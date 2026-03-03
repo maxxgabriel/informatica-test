@@ -1,19 +1,16 @@
-# pilot_migration_poc.py
-# Pilot Migration and Proof of Concept Framework
-# Validates migration approach from Informatica PowerCenter to PySpark
-
-from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql import functions as F
+import sys
+import logging
+from datetime import datetime
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import *
 from pyspark.sql.types import *
 from pyspark.sql.window import Window
-from datetime import datetime
-import logging
-import json
 import hashlib
+import json
 from typing import Dict, List, Tuple, Any
 from dataclasses import dataclass, asdict
 from enum import Enum
-import time
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class ValidationStatus(Enum):
+    """Enumeration for validation status"""
     PASSED = "PASSED"
     FAILED = "FAILED"
     WARNING = "WARNING"
@@ -30,770 +28,803 @@ class ValidationStatus(Enum):
 
 @dataclass
 class ValidationResult:
+    """Data class to store validation results"""
+    workflow_name: str
     validation_type: str
     status: ValidationStatus
     source_count: int
     target_count: int
     match_percentage: float
-    discrepancies: List[Dict[str, Any]]
-    execution_time_seconds: float
+    discrepancies: List[Dict]
+    execution_time: float
     timestamp: str
+    
+    def to_dict(self):
+        return asdict(self)
 
 
 @dataclass
 class PerformanceMetrics:
+    """Data class to store performance metrics"""
     workflow_name: str
-    execution_time_seconds: float
+    source_system: str
+    target_system: str
+    source_execution_time: float
+    target_execution_time: float
+    improvement_percentage: float
     records_processed: int
-    records_per_second: float
-    memory_usage_mb: float
-    cpu_usage_percent: float
-    baseline_time_seconds: float
-    performance_improvement_percent: float
-
-
-@dataclass
-class LessonLearned:
-    category: str
-    description: str
-    impact: str
-    recommendation: str
-    priority: str
+    throughput_source: float
+    throughput_target: float
+    timestamp: str
+    
+    def to_dict(self):
+        return asdict(self)
 
 
 class PilotMigrationFramework:
+    """
+    Framework for conducting pilot migrations from Informatica PowerCenter to PySpark
+    Handles workflow migration, validation, and performance testing
+    """
+    
     def __init__(self, spark: SparkSession, config: Dict[str, Any]):
+        """
+        Initialize pilot migration framework
+        
+        Args:
+            spark: SparkSession instance
+            config: Configuration dictionary containing connection details and paths
+        """
         self.spark = spark
         self.config = config
         self.validation_results = []
         self.performance_metrics = []
         self.lessons_learned = []
         
-    def create_spark_session(self) -> SparkSession:
-        return SparkSession.builder \
-            .appName("Pilot_Migration_POC") \
-            .config("spark.sql.adaptive.enabled", "true") \
-            .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
-            .config("spark.sql.shuffle.partitions", "200") \
-            .config("spark.sql.sources.partitionOverwriteMode", "dynamic") \
-            .config("spark.sql.legacy.timeParserPolicy", "LEGACY") \
-            .enableHiveSupport() \
-            .getOrCreate()
+    def read_source_data(self, table_name: str, source_query: str = None) -> Any:
+        """
+        Read data from source system (simulating Informatica PowerCenter output)
+        
+        Args:
+            table_name: Name of the source table
+            source_query: Optional SQL query for source data
+            
+        Returns:
+            DataFrame containing source data
+        """
+        try:
+            logger.info(f"Reading source data from table: {table_name}")
+            
+            if source_query:
+                df = self.spark.read \
+                    .format("jdbc") \
+                    .option("url", self.config['source_jdbc_url']) \
+                    .option("query", source_query) \
+                    .option("user", self.config['source_user']) \
+                    .option("password", self.config['source_password']) \
+                    .option("driver", self.config['source_driver']) \
+                    .load()
+            else:
+                df = self.spark.read \
+                    .format("jdbc") \
+                    .option("url", self.config['source_jdbc_url']) \
+                    .option("dbtable", table_name) \
+                    .option("user", self.config['source_user']) \
+                    .option("password", self.config['source_password']) \
+                    .option("driver", self.config['source_driver']) \
+                    .load()
+            
+            logger.info(f"Successfully read {df.count()} records from source")
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error reading source data: {str(e)}")
+            raise
+    
+    def write_target_data(self, df: Any, table_name: str, mode: str = "overwrite"):
+        """
+        Write data to target system
+        
+        Args:
+            df: DataFrame to write
+            table_name: Target table name
+            mode: Write mode (overwrite, append, etc.)
+        """
+        try:
+            logger.info(f"Writing data to target table: {table_name}")
+            
+            df.write \
+                .format("jdbc") \
+                .option("url", self.config['target_jdbc_url']) \
+                .option("dbtable", table_name) \
+                .option("user", self.config['target_user']) \
+                .option("password", self.config['target_password']) \
+                .option("driver", self.config['target_driver']) \
+                .mode(mode) \
+                .save()
+            
+            logger.info(f"Successfully wrote {df.count()} records to target")
+            
+        except Exception as e:
+            logger.error(f"Error writing target data: {str(e)}")
+            raise
 
 
-class PilotWorkflow1_CustomerDataLoad:
+class PilotWorkflow1_CustomerDimensionLoad(PilotMigrationFramework):
     """
-    Pilot Workflow 1: Simple Customer Data Load
-    Informatica Workflow: m_customer_load
-    Source: Oracle customer table
-    Target: Hive customer_dim table
-    Transformations: Filter, Expression, Lookup, Aggregator
+    Pilot Workflow 1: Simple Customer Dimension Load
+    
+    Source: Informatica PowerCenter Workflow
+    Description: Loads customer dimension with basic transformations
+    Transformations:
+        - Source Qualifier
+        - Expression (data cleansing and standardization)
+        - Lookup (reference data)
+        - Filter (active customers only)
+        - Router (customer segmentation)
+        - Target Load
     """
     
-    def __init__(self, spark: SparkSession):
-        self.spark = spark
-        self.workflow_name = "customer_data_load"
+    def __init__(self, spark: SparkSession, config: Dict[str, Any]):
+        super().__init__(spark, config)
+        self.workflow_name = "WF_CUSTOMER_DIM_LOAD"
         
-    def extract_source_data(self, source_config: Dict[str, Any]) -> DataFrame:
-        logger.info(f"Extracting source data for {self.workflow_name}")
+    def source_qualifier_transformation(self) -> Any:
+        """
+        Replicate Informatica Source Qualifier transformation
+        Reads from source customer table with filtering
+        """
+        logger.info(f"Executing Source Qualifier for {self.workflow_name}")
         
-        df = self.spark.read \
-            .format("jdbc") \
-            .option("url", source_config["jdbc_url"]) \
-            .option("dbtable", source_config["table_name"]) \
-            .option("user", source_config["username"]) \
-            .option("password", source_config["password"]) \
-            .option("driver", "oracle.jdbc.driver.OracleDriver") \
-            .option("fetchsize", "10000") \
-            .option("numPartitions", "4") \
-            .load()
+        source_query = """
+            SELECT 
+                CUSTOMER_ID,
+                FIRST_NAME,
+                LAST_NAME,
+                EMAIL,
+                PHONE,
+                ADDRESS,
+                CITY,
+                STATE,
+                ZIP_CODE,
+                CUSTOMER_STATUS,
+                CUSTOMER_TYPE,
+                REGISTRATION_DATE,
+                LAST_UPDATE_DATE
+            FROM CUSTOMERS
+            WHERE LAST_UPDATE_DATE >= CURRENT_DATE - 1
+        """
         
-        logger.info(f"Extracted {df.count()} records from source")
+        df = self.read_source_data("CUSTOMERS", source_query)
         return df
     
-    def apply_transformations(self, source_df: DataFrame) -> DataFrame:
-        logger.info("Applying transformations")
+    def expression_transformation(self, df: Any) -> Any:
+        """
+        Replicate Informatica Expression transformation
+        Data cleansing, standardization, and derived columns
+        """
+        logger.info("Executing Expression transformation")
         
-        # Filter Transformation: Filter active customers only
-        filtered_df = source_df.filter(
-            (F.col("status") == "ACTIVE") & 
-            (F.col("customer_id").isNotNull())
+        df_transformed = df.select(
+            col("CUSTOMER_ID").cast(IntegerType()).alias("CUSTOMER_ID"),
+            
+            # Name standardization - trim and proper case
+            initcap(trim(col("FIRST_NAME"))).alias("FIRST_NAME"),
+            initcap(trim(col("LAST_NAME"))).alias("LAST_NAME"),
+            
+            # Full name concatenation
+            concat_ws(" ", 
+                     initcap(trim(col("FIRST_NAME"))), 
+                     initcap(trim(col("LAST_NAME")))
+            ).alias("FULL_NAME"),
+            
+            # Email standardization - lowercase and trim
+            lower(trim(col("EMAIL"))).alias("EMAIL"),
+            
+            # Phone standardization - remove special characters
+            regexp_replace(col("PHONE"), "[^0-9]", "").alias("PHONE_CLEAN"),
+            
+            # Address standardization
+            upper(trim(col("ADDRESS"))).alias("ADDRESS"),
+            upper(trim(col("CITY"))).alias("CITY"),
+            upper(trim(col("STATE"))).alias("STATE"),
+            trim(col("ZIP_CODE")).alias("ZIP_CODE"),
+            
+            # Status and type
+            col("CUSTOMER_STATUS"),
+            col("CUSTOMER_TYPE"),
+            
+            # Derived columns
+            when(datediff(current_date(), col("REGISTRATION_DATE")) <= 90, "NEW")
+            .when(datediff(current_date(), col("REGISTRATION_DATE")) <= 365, "REGULAR")
+            .otherwise("VETERAN").alias("CUSTOMER_TENURE"),
+            
+            # Date fields
+            col("REGISTRATION_DATE"),
+            col("LAST_UPDATE_DATE"),
+            
+            # Audit columns
+            current_timestamp().alias("ETL_INSERT_DATE"),
+            lit(self.workflow_name).alias("ETL_PROCESS_NAME")
         )
         
-        # Expression Transformation: Calculate derived fields
-        transformed_df = filtered_df.withColumn(
-            "full_name",
-            F.concat_ws(" ", F.col("first_name"), F.col("last_name"))
-        ).withColumn(
-            "age",
-            F.floor(F.months_between(F.current_date(), F.col("birth_date")) / 12)
-        ).withColumn(
-            "customer_key",
-            F.sha2(F.concat_ws("|", F.col("customer_id"), F.col("source_system")), 256)
-        ).withColumn(
-            "load_date",
-            F.current_timestamp()
-        ).withColumn(
-            "is_vip",
-            F.when(F.col("total_purchases") > 10000, F.lit("Y")).otherwise(F.lit("N"))
-        )
+        return df_transformed
+    
+    def lookup_transformation(self, df: Any) -> Any:
+        """
+        Replicate Informatica Lookup transformation
+        Lookup reference data for state codes and customer segments
+        """
+        logger.info("Executing Lookup transformation")
         
-        # Lookup Transformation: Enrich with region data
-        region_df = self.spark.table("reference.regions")
-        enriched_df = transformed_df.alias("cust").join(
-            region_df.alias("reg"),
-            F.col("cust.region_id") == F.col("reg.region_id"),
+        # Create lookup table for state codes
+        state_lookup_df = self.spark.createDataFrame([
+            ("AL", "Alabama", "South"),
+            ("AK", "Alaska", "West"),
+            ("CA", "California", "West"),
+            ("NY", "New York", "Northeast"),
+            ("TX", "Texas", "South"),
+            ("FL", "Florida", "South")
+        ], ["STATE_CODE", "STATE_NAME", "REGION"])
+        
+        # Perform lookup join
+        df_with_lookup = df.join(
+            state_lookup_df,
+            df.STATE == state_lookup_df.STATE_CODE,
             "left"
         ).select(
-            "cust.*",
-            F.col("reg.region_name"),
-            F.col("reg.region_code")
+            df["*"],
+            state_lookup_df["STATE_NAME"],
+            state_lookup_df["REGION"]
         )
         
-        # Aggregator Transformation: Calculate customer metrics
-        window_spec = Window.partitionBy("customer_id").orderBy(F.col("transaction_date").desc())
+        return df_with_lookup
+    
+    def filter_transformation(self, df: Any) -> Any:
+        """
+        Replicate Informatica Filter transformation
+        Filter for active customers only
+        """
+        logger.info("Executing Filter transformation")
         
-        final_df = enriched_df.withColumn(
-            "last_purchase_date",
-            F.first("transaction_date").over(window_spec)
-        ).withColumn(
-            "purchase_count",
-            F.count("transaction_id").over(Window.partitionBy("customer_id"))
-        ).withColumn(
-            "total_spend",
-            F.sum("transaction_amount").over(Window.partitionBy("customer_id"))
-        ).distinct()
-        
-        # Data Quality Checks
-        final_df = final_df.withColumn(
-            "data_quality_flag",
-            F.when(
-                (F.col("email").isNull()) | 
-                (F.col("phone").isNull()), 
-                F.lit("INCOMPLETE")
-            ).otherwise(F.lit("COMPLETE"))
+        df_filtered = df.filter(
+            (col("CUSTOMER_STATUS") == "ACTIVE") &
+            (col("EMAIL").isNotNull()) &
+            (col("PHONE_CLEAN").isNotNull())
         )
         
-        logger.info(f"Transformations applied, resulting in {final_df.count()} records")
-        return final_df
+        logger.info(f"Filtered records: {df_filtered.count()}")
+        return df_filtered
     
-    def load_target_data(self, transformed_df: DataFrame, target_config: Dict[str, Any]):
-        logger.info("Loading data to target")
+    def router_transformation(self, df: Any) -> Tuple[Any, Any, Any]:
+        """
+        Replicate Informatica Router transformation
+        Route customers to different segments based on criteria
+        """
+        logger.info("Executing Router transformation")
         
-        target_table = target_config["target_table"]
-        partition_columns = target_config.get("partition_columns", [])
+        # Premium customers
+        premium_df = df.filter(col("CUSTOMER_TYPE") == "PREMIUM")
         
-        if partition_columns:
-            transformed_df.write \
-                .mode("overwrite") \
-                .partitionBy(*partition_columns) \
-                .format("parquet") \
-                .option("compression", "snappy") \
-                .saveAsTable(target_table)
-        else:
-            transformed_df.write \
-                .mode("overwrite") \
-                .format("parquet") \
-                .option("compression", "snappy") \
-                .saveAsTable(target_table)
+        # Standard customers
+        standard_df = df.filter(col("CUSTOMER_TYPE") == "STANDARD")
         
-        logger.info(f"Data loaded to {target_table}")
+        # Basic customers (default group)
+        basic_df = df.filter(
+            (col("CUSTOMER_TYPE") != "PREMIUM") & 
+            (col("CUSTOMER_TYPE") != "STANDARD")
+        )
+        
+        logger.info(f"Premium customers: {premium_df.count()}")
+        logger.info(f"Standard customers: {standard_df.count()}")
+        logger.info(f"Basic customers: {basic_df.count()}")
+        
+        return premium_df, standard_df, basic_df
     
-    def execute(self, source_config: Dict[str, Any], target_config: Dict[str, Any]) -> Dict[str, Any]:
-        start_time = time.time()
+    def execute_workflow(self) -> Dict[str, Any]:
+        """
+        Execute complete workflow with all transformations
+        """
+        logger.info(f"Starting execution of {self.workflow_name}")
+        start_time = datetime.now()
         
         try:
-            source_df = self.extract_source_data(source_config)
-            source_count = source_df.count()
+            # Execute transformation pipeline
+            df_source = self.source_qualifier_transformation()
+            df_expression = self.expression_transformation(df_source)
+            df_lookup = self.lookup_transformation(df_expression)
+            df_filtered = self.filter_transformation(df_lookup)
+            premium_df, standard_df, basic_df = self.router_transformation(df_filtered)
             
-            transformed_df = self.apply_transformations(source_df)
-            target_count = transformed_df.count()
+            # Add segment identifier and union all segments
+            premium_df = premium_df.withColumn("CUSTOMER_SEGMENT", lit("PREMIUM"))
+            standard_df = standard_df.withColumn("CUSTOMER_SEGMENT", lit("STANDARD"))
+            basic_df = basic_df.withColumn("CUSTOMER_SEGMENT", lit("BASIC"))
             
-            self.load_target_data(transformed_df, target_config)
+            final_df = premium_df.union(standard_df).union(basic_df)
             
-            execution_time = time.time() - start_time
+            # Write to target
+            self.write_target_data(final_df, "DIM_CUSTOMER")
             
-            return {
+            execution_time = (datetime.now() - start_time).total_seconds()
+            
+            result = {
+                "workflow_name": self.workflow_name,
                 "status": "SUCCESS",
-                "source_count": source_count,
-                "target_count": target_count,
+                "records_processed": final_df.count(),
                 "execution_time": execution_time,
-                "records_per_second": target_count / execution_time if execution_time > 0 else 0
+                "timestamp": datetime.now().isoformat()
             }
+            
+            logger.info(f"Workflow completed successfully in {execution_time} seconds")
+            return result
+            
         except Exception as e:
             logger.error(f"Workflow execution failed: {str(e)}")
-            return {
-                "status": "FAILED",
-                "error": str(e),
-                "execution_time": time.time() - start_time
-            }
+            raise
 
 
-class PilotWorkflow2_SalesAggregation:
+class PilotWorkflow2_SalesFactLoad(PilotMigrationFramework):
     """
-    Pilot Workflow 2: Sales Data Aggregation
-    Informatica Workflow: m_sales_aggregate
-    Source: Hive sales_transactions table
-    Target: Hive sales_summary table
-    Transformations: Aggregator, Sorter, Expression, Router
+    Pilot Workflow 2: Sales Fact Load with Aggregation
+    
+    Source: Informatica PowerCenter Workflow
+    Description: Loads sales fact table with aggregations
+    Transformations:
+        - Source Qualifier (multiple sources)
+        - Joiner (sales and product data)
+        - Aggregator (daily sales summary)
+        - Expression (calculations)
+        - Update Strategy (SCD Type 1)
+        - Target Load
     """
     
-    def __init__(self, spark: SparkSession):
-        self.spark = spark
-        self.workflow_name = "sales_aggregation"
-        
-    def extract_source_data(self, source_config: Dict[str, Any]) -> DataFrame:
-        logger.info(f"Extracting source data for {self.workflow_name}")
-        
-        source_table = source_config["source_table"]
-        partition_filter = source_config.get("partition_filter")
-        
-        df = self.spark.table(source_table)
-        
-        if partition_filter:
-            df = df.filter(partition_filter)
-        
-        logger.info(f"Extracted {df.count()} records from source")
-        return df
+    def __init__(self, spark: SparkSession, config: Dict[str, Any]):
+        super().__init__(spark, config)
+        self.workflow_name = "WF_SALES_FACT_LOAD"
     
-    def apply_transformations(self, source_df: DataFrame) -> Tuple[DataFrame, DataFrame, DataFrame]:
-        logger.info("Applying transformations")
+    def source_qualifier_sales(self) -> Any:
+        """Source Qualifier for sales transactions"""
+        logger.info("Reading sales transaction data")
         
-        # Expression Transformation: Calculate derived metrics
-        prepared_df = source_df.withColumn(
-            "sale_amount",
-            F.col("quantity") * F.col("unit_price")
-        ).withColumn(
-            "discount_amount",
-            F.col("sale_amount") * F.col("discount_percent") / 100
-        ).withColumn(
-            "net_sale_amount",
-            F.col("sale_amount") - F.col("discount_amount")
-        ).withColumn(
-            "sale_date",
-            F.to_date(F.col("transaction_timestamp"))
-        ).withColumn(
-            "sale_year",
-            F.year(F.col("sale_date"))
-        ).withColumn(
-            "sale_month",
-            F.month(F.col("sale_date"))
-        ).withColumn(
-            "sale_quarter",
-            F.quarter(F.col("sale_date"))
+        query = """
+            SELECT 
+                TRANSACTION_ID,
+                CUSTOMER_ID,
+                PRODUCT_ID,
+                TRANSACTION_DATE,
+                QUANTITY,
+                UNIT_PRICE,
+                DISCOUNT_PERCENT,
+                TAX_AMOUNT,
+                TRANSACTION_STATUS
+            FROM SALES_TRANSACTIONS
+            WHERE TRANSACTION_DATE >= CURRENT_DATE - 1
+        """
+        
+        return self.read_source_data("SALES_TRANSACTIONS", query)
+    
+    def source_qualifier_product(self) -> Any:
+        """Source Qualifier for product dimension"""
+        logger.info("Reading product dimension data")
+        
+        return self.read_source_data("PRODUCTS")
+    
+    def joiner_transformation(self, sales_df: Any, product_df: Any) -> Any:
+        """
+        Replicate Informatica Joiner transformation
+        Join sales with product data
+        """
+        logger.info("Executing Joiner transformation")
+        
+        joined_df = sales_df.join(
+            product_df,
+            sales_df.PRODUCT_ID == product_df.PRODUCT_ID,
+            "inner"
+        ).select(
+            sales_df["*"],
+            product_df["PRODUCT_NAME"],
+            product_df["CATEGORY"],
+            product_df["SUBCATEGORY"],
+            product_df["COST_PRICE"]
         )
         
-        # Aggregator Transformation: Daily aggregation
-        daily_agg = prepared_df.groupBy(
-            "sale_date",
-            "sale_year",
-            "sale_month",
-            "sale_quarter",
-            "product_id",
-            "store_id"
+        return joined_df
+    
+    def expression_transformation(self, df: Any) -> Any:
+        """
+        Replicate Informatica Expression transformation
+        Calculate derived metrics
+        """
+        logger.info("Executing Expression transformation")
+        
+        df_calculated = df.select(
+            col("TRANSACTION_ID"),
+            col("CUSTOMER_ID"),
+            col("PRODUCT_ID"),
+            col("TRANSACTION_DATE"),
+            col("QUANTITY"),
+            col("UNIT_PRICE"),
+            col("DISCOUNT_PERCENT"),
+            col("TAX_AMOUNT"),
+            col("PRODUCT_NAME"),
+            col("CATEGORY"),
+            col("SUBCATEGORY"),
+            col("COST_PRICE"),
+            
+            # Calculated fields
+            (col("QUANTITY") * col("UNIT_PRICE")).alias("GROSS_AMOUNT"),
+            
+            (col("QUANTITY") * col("UNIT_PRICE") * col("DISCOUNT_PERCENT") / 100)
+            .alias("DISCOUNT_AMOUNT"),
+            
+            (col("QUANTITY") * col("UNIT_PRICE") * (1 - col("DISCOUNT_PERCENT") / 100))
+            .alias("NET_AMOUNT"),
+            
+            (col("QUANTITY") * col("UNIT_PRICE") * (1 - col("DISCOUNT_PERCENT") / 100) + col("TAX_AMOUNT"))
+            .alias("TOTAL_AMOUNT"),
+            
+            (col("QUANTITY") * col("COST_PRICE")).alias("TOTAL_COST"),
+            
+            ((col("QUANTITY") * col("UNIT_PRICE") * (1 - col("DISCOUNT_PERCENT") / 100)) - 
+             (col("QUANTITY") * col("COST_PRICE")))
+            .alias("PROFIT_AMOUNT"),
+            
+            # Audit columns
+            current_timestamp().alias("ETL_INSERT_DATE"),
+            lit(self.workflow_name).alias("ETL_PROCESS_NAME")
+        )
+        
+        return df_calculated
+    
+    def aggregator_transformation(self, df: Any) -> Any:
+        """
+        Replicate Informatica Aggregator transformation
+        Aggregate sales by date, customer, and product
+        """
+        logger.info("Executing Aggregator transformation")
+        
+        agg_df = df.groupBy(
+            "TRANSACTION_DATE",
+            "CUSTOMER_ID",
+            "PRODUCT_ID",
+            "CATEGORY",
+            "SUBCATEGORY"
         ).agg(
-            F.count("transaction_id").alias("transaction_count"),
-            F.sum("quantity").alias("total_quantity"),
-            F.sum("sale_amount").alias("total_sale_amount"),
-            F.sum("discount_amount").alias("total_discount_amount"),
-            F.sum("net_sale_amount").alias("total_net_sale_amount"),
-            F.avg("unit_price").alias("avg_unit_price"),
-            F.max("unit_price").alias("max_unit_price"),
-            F.min("unit_price").alias("min_unit_price")
+            count("TRANSACTION_ID").alias("TRANSACTION_COUNT"),
+            sum("QUANTITY").alias("TOTAL_QUANTITY"),
+            sum("GROSS_AMOUNT").alias("TOTAL_GROSS_AMOUNT"),
+            sum("DISCOUNT_AMOUNT").alias("TOTAL_DISCOUNT_AMOUNT"),
+            sum("NET_AMOUNT").alias("TOTAL_NET_AMOUNT"),
+            sum("TAX_AMOUNT").alias("TOTAL_TAX_AMOUNT"),
+            sum("TOTAL_AMOUNT").alias("TOTAL_SALES_AMOUNT"),
+            sum("TOTAL_COST").alias("TOTAL_COST_AMOUNT"),
+            sum("PROFIT_AMOUNT").alias("TOTAL_PROFIT_AMOUNT"),
+            avg("UNIT_PRICE").alias("AVG_UNIT_PRICE"),
+            max("UNIT_PRICE").alias("MAX_UNIT_PRICE"),
+            min("UNIT_PRICE").alias("MIN_UNIT_PRICE")
         )
         
-        # Aggregator Transformation: Monthly aggregation
-        monthly_agg = prepared_df.groupBy(
-            "sale_year",
-            "sale_month",
-            "sale_quarter",
-            "product_id",
-            "store_id"
-        ).agg(
-            F.count("transaction_id").alias("transaction_count"),
-            F.sum("quantity").alias("total_quantity"),
-            F.sum("sale_amount").alias("total_sale_amount"),
-            F.sum("discount_amount").alias("total_discount_amount"),
-            F.sum("net_sale_amount").alias("total_net_sale_amount"),
-            F.avg("unit_price").alias("avg_unit_price"),
-            F.countDistinct("customer_id").alias("unique_customers")
+        # Add profit margin calculation
+        agg_df = agg_df.withColumn(
+            "PROFIT_MARGIN_PCT",
+            when(col("TOTAL_SALES_AMOUNT") > 0,
+                 (col("TOTAL_PROFIT_AMOUNT") / col("TOTAL_SALES_AMOUNT") * 100)
+            ).otherwise(0)
         )
         
-        # Router Transformation: Split high value and regular sales
-        high_value_threshold = 1000
-        
-        high_value_sales = daily_agg.filter(
-            F.col("total_net_sale_amount") >= high_value_threshold
-        ).withColumn("category", F.lit("HIGH_VALUE"))
-        
-        regular_sales = daily_agg.filter(
-            F.col("total_net_sale_amount") < high_value_threshold
-        ).withColumn("category", F.lit("REGULAR"))
-        
-        # Sorter Transformation: Sort by date and amount
-        sorted_daily = daily_agg.orderBy(
-            F.col("sale_date").desc(),
-            F.col("total_net_sale_amount").desc()
-        )
-        
-        sorted_monthly = monthly_agg.orderBy(
-            F.col("sale_year").desc(),
-            F.col("sale_month").desc(),
-            F.col("total_net_sale_amount").desc()
-        )
-        
-        # Add audit columns
-        sorted_daily = sorted_daily.withColumn("load_timestamp", F.current_timestamp())
-        sorted_monthly = sorted_monthly.withColumn("load_timestamp", F.current_timestamp())
-        
-        logger.info("Transformations applied successfully")
-        return sorted_daily, sorted_monthly, high_value_sales.union(regular_sales)
+        return agg_df
     
-    def load_target_data(self, daily_df: DataFrame, monthly_df: DataFrame, 
-                        categorized_df: DataFrame, target_config: Dict[str, Any]):
-        logger.info("Loading data to target tables")
+    def update_strategy_transformation(self, df: Any) -> Any:
+        """
+        Replicate Informatica Update Strategy (SCD Type 1)
+        Add update strategy flag
+        """
+        logger.info("Executing Update Strategy transformation")
         
-        daily_df.write \
-            .mode("overwrite") \
-            .partitionBy("sale_year", "sale_month") \
-            .format("parquet") \
-            .saveAsTable(target_config["daily_table"])
+        # Read existing target data
+        try:
+            existing_df = self.spark.read \
+                .format("jdbc") \
+                .option("url", self.config['target_jdbc_url']) \
+                .option("dbtable", "FACT_SALES_DAILY") \
+                .option("user", self.config['target_user']) \
+                .option("password", self.config['target_password']) \
+                .load()
+            
+            # Identify new and existing records
+            df_with_strategy = df.join(
+                existing_df,
+                (df.TRANSACTION_DATE == existing_df.TRANSACTION_DATE) &
+                (df.CUSTOMER_ID == existing_df.CUSTOMER_ID) &
+                (df.PRODUCT_ID == existing_df.PRODUCT_ID),
+                "left"
+            ).select(
+                df["*"],
+                when(existing_df.TRANSACTION_DATE.isNull(), "INSERT")
+                .otherwise("UPDATE").alias("UPDATE_STRATEGY")
+            )
+            
+        except Exception as e:
+            logger.warning(f"Target table not found, all records will be inserts: {str(e)}")
+            df_with_strategy = df.withColumn("UPDATE_STRATEGY", lit("INSERT"))
         
-        monthly_df.write \
-            .mode("overwrite") \
-            .partitionBy("sale_year", "sale_month") \
-            .format("parquet") \
-            .saveAsTable(target_config["monthly_table"])
-        
-        categorized_df.write \
-            .mode("overwrite") \
-            .partitionBy("category") \
-            .format("parquet") \
-            .saveAsTable(target_config["categorized_table"])
-        
-        logger.info("Data loaded to all target tables")
+        return df_with_strategy
     
-    def execute(self, source_config: Dict[str, Any], target_config: Dict[str, Any]) -> Dict[str, Any]:
-        start_time = time.time()
+    def execute_workflow(self) -> Dict[str, Any]:
+        """Execute complete workflow"""
+        logger.info(f"Starting execution of {self.workflow_name}")
+        start_time = datetime.now()
         
         try:
-            source_df = self.extract_source_data(source_config)
-            source_count = source_df.count()
+            # Execute transformation pipeline
+            sales_df = self.source_qualifier_sales()
+            product_df = self.source_qualifier_product()
+            joined_df = self.joiner_transformation(sales_df, product_df)
+            calculated_df = self.expression_transformation(joined_df)
+            aggregated_df = self.aggregator_transformation(calculated_df)
+            final_df = self.update_strategy_transformation(aggregated_df)
             
-            daily_df, monthly_df, categorized_df = self.apply_transformations(source_df)
+            # Add audit columns
+            final_df = final_df.withColumn("ETL_INSERT_DATE", current_timestamp()) \
+                               .withColumn("ETL_UPDATE_DATE", current_timestamp()) \
+                               .withColumn("ETL_PROCESS_NAME", lit(self.workflow_name))
             
-            self.load_target_data(daily_df, monthly_df, categorized_df, target_config)
+            # Write to target (handle updates separately in production)
+            inserts_df = final_df.filter(col("UPDATE_STRATEGY") == "INSERT")
+            updates_df = final_df.filter(col("UPDATE_STRATEGY") == "UPDATE")
             
-            execution_time = time.time() - start_time
+            if inserts_df.count() > 0:
+                self.write_target_data(inserts_df.drop("UPDATE_STRATEGY"), 
+                                     "FACT_SALES_DAILY", "append")
             
-            return {
+            if updates_df.count() > 0:
+                # In production, use merge/upsert logic
+                logger.info(f"Processing {updates_df.count()} updates")
+            
+            execution_time = (datetime.now() - start_time).total_seconds()
+            
+            result = {
+                "workflow_name": self.workflow_name,
                 "status": "SUCCESS",
-                "source_count": source_count,
-                "daily_count": daily_df.count(),
-                "monthly_count": monthly_df.count(),
-                "categorized_count": categorized_df.count(),
-                "execution_time": execution_time
+                "records_processed": final_df.count(),
+                "inserts": inserts_df.count(),
+                "updates": updates_df.count(),
+                "execution_time": execution_time,
+                "timestamp": datetime.now().isoformat()
             }
+            
+            logger.info(f"Workflow completed successfully in {execution_time} seconds")
+            return result
+            
         except Exception as e:
             logger.error(f"Workflow execution failed: {str(e)}")
-            return {
-                "status": "FAILED",
-                "error": str(e),
-                "execution_time": time.time() - start_time
-            }
+            raise
 
 
-class DataValidator:
-    """Comprehensive data validation framework"""
+class DataValidationFramework:
+    """
+    Framework for validating data between source (Informatica) and target (PySpark)
+    Ensures 100% data accuracy
+    """
     
-    def __init__(self, spark: SparkSession):
+    def __init__(self, spark: SparkSession, config: Dict[str, Any]):
         self.spark = spark
-        
-    def validate_record_count(self, source_df: DataFrame, target_df: DataFrame, 
-                             tolerance: float = 0.0) -> ValidationResult:
-        start_time = time.time()
+        self.config = config
+        self.validation_results = []
+    
+    def row_count_validation(self, workflow_name: str, 
+                            source_df: Any, target_df: Any) -> ValidationResult:
+        """Validate row counts match between source and target"""
+        logger.info("Executing row count validation")
+        start_time = datetime.now()
         
         source_count = source_df.count()
         target_count = target_df.count()
-        
         match_percentage = (min(source_count, target_count) / max(source_count, target_count) * 100) \
-            if max(source_count, target_count) > 0 else 0
+                          if max(source_count, target_count) > 0 else 100.0
         
-        status = ValidationStatus.PASSED if abs(source_count - target_count) <= tolerance \
-            else ValidationStatus.FAILED
+        status = ValidationStatus.PASSED if source_count == target_count else ValidationStatus.FAILED
         
-        discrepancies = []
-        if status == ValidationStatus.FAILED:
-            discrepancies.append({
-                "type": "COUNT_MISMATCH",
-                "source_count": source_count,
-                "target_count": target_count,
-                "difference": abs(source_count - target_count)
-            })
-        
-        return ValidationResult(
-            validation_type="RECORD_COUNT",
+        result = ValidationResult(
+            workflow_name=workflow_name,
+            validation_type="ROW_COUNT",
             status=status,
             source_count=source_count,
             target_count=target_count,
             match_percentage=match_percentage,
-            discrepancies=discrepancies,
-            execution_time_seconds=time.time() - start_time,
+            discrepancies=[],
+            execution_time=(datetime.now() - start_time).total_seconds(),
             timestamp=datetime.now().isoformat()
         )
+        
+        logger.info(f"Row count validation: {status.value} - Source: {source_count}, Target: {target_count}")
+        return result
     
-    def validate_schema(self, source_df: DataFrame, target_df: DataFrame) -> ValidationResult:
-        start_time = time.time()
-        
-        source_schema = {field.name: field.dataType.simpleString() for field in source_df.schema.fields}
-        target_schema = {field.name: field.dataType.simpleString() for field in target_df.schema.fields}
-        
-        common_fields = set(source_schema.keys()) & set(target_schema.keys())
-        missing_in_target = set(source_schema.keys()) - set(target_schema.keys())
-        extra_in_target = set(target_schema.keys()) - set(source_schema.keys())
-        
-        type_mismatches = []
-        for field in common_fields:
-            if source_schema[field] != target_schema[field]:
-                type_mismatches.append({
-                    "field": field,
-                    "source_type": source_schema[field],
-                    "target_type": target_schema[field]
-                })
+    def column_comparison_validation(self, workflow_name: str,
+                                    source_df: Any, target_df: Any,
+                                    key_columns: List[str],
+                                    compare_columns: List[str]) -> ValidationResult:
+        """Compare column values between source and target"""
+        logger.info("Executing column comparison validation")
+        start_time = datetime.now()
         
         discrepancies = []
-        if missing_in_target:
-            discrepancies.append({"type": "MISSING_FIELDS", "fields": list(missing_in_target)})
-        if extra_in_target:
-            discrepancies.append({"type": "EXTRA_FIELDS", "fields": list(extra_in_target)})
-        if type_mismatches:
-            discrepancies.append({"type": "TYPE_MISMATCHES", "details": type_mismatches})
         
-        status = ValidationStatus.PASSED if not discrepancies else ValidationStatus.WARNING
+        # Join source and target on key columns
+        comparison_df = source_df.alias("src").join(
+            target_df.alias("tgt"),
+            key_columns,
+            "full_outer"
+        )
         
-        match_percentage = (len(common_fields) / max(len(source_schema), len(target_schema)) * 100) \
-            if max(len(source_schema), len(target_schema)) > 0 else 0
+        # Check for null keys (missing records)
+        for key_col in key_columns:
+            missing_source = comparison_df.filter(col(f"src.{key_col}").isNull()).count()
+            missing_target = comparison_df.filter(col(f"tgt.{key_col}").isNull()).count()
+            
+            if missing_source > 0:
+                discrepancies.append({
+                    "type": "MISSING_IN_SOURCE",
+                    "column": key_col,
+                    "count": missing_source
+                })
+            
+            if missing_target > 0:
+                discrepancies.append({
+                    "type": "MISSING_IN_TARGET",
+                    "column": key_col,
+                    "count": missing_target
+                })
         
-        return ValidationResult(
-            validation_type="SCHEMA",
+        # Compare values for each column
+        for col_name in compare_columns:
+            mismatch_df = comparison_df.filter(
+                col(f"src.{col_name}") != col(f"tgt.{col_name}")
+            )
+            mismatch_count = mismatch_df.count()
+            
+            if mismatch_count > 0:
+                discrepancies.append({
+                    "type": "VALUE_MISMATCH",
+                    "column": col_name,
+                    "count": mismatch_count
+                })
+        
+        status = ValidationStatus.PASSED if len(discrepancies) == 0 else ValidationStatus.FAILED
+        
+        result = ValidationResult(
+            workflow_name=workflow_name,
+            validation_type="COLUMN_COMPARISON",
             status=status,
-            source_count=len(source_schema),
-            target_count=len(target_schema),
-            match_percentage=match_percentage,
+            source_count=source_df.count(),
+            target_count=target_df.count(),
+            match_percentage=100.0 if len(discrepancies) == 0 else 0.0,
             discrepancies=discrepancies,
-            execution_time_seconds=time.time() - start_time,
+            execution_time=(datetime.now() - start_time).total_seconds(),
             timestamp=datetime.now().isoformat()
         )
+        
+        logger.info(f"Column comparison validation: {status.value} - Discrepancies: {len(discrepancies)}")
+        return result
     
-    def validate_data_quality(self, source_df: DataFrame, target_df: DataFrame, 
-                             key_columns: List[str]) -> ValidationResult:
-        start_time = time.time()
+    def checksum_validation(self, workflow_name: str,
+                           source_df: Any, target_df: Any,
+                           key_columns: List[str],
+                           checksum_columns: List[str]) -> ValidationResult:
+        """Validate using checksum for data integrity"""
+        logger.info("Executing checksum validation")
+        start_time = datetime.now()
         
-        # Create composite key for comparison
-        key_expr = F.concat_ws("||", *[F.coalesce(F.col(c).cast("string"), F.lit("NULL")) 
-                                        for c in key_columns])
+        def calculate_checksum(df, columns):
+            # Concatenate all columns and calculate MD5 hash
+            concat_expr = concat_ws("|", *[coalesce(col(c).cast("string"), lit("NULL")) 
+                                          for c in columns])
+            return df.withColumn("CHECKSUM", md5(concat_expr))
         
-        source_with_key = source_df.withColumn("composite_key", key_expr)
-        target_with_key = target_df.withColumn("composite_key", key_expr)
+        source_with_checksum = calculate_checksum(source_df, checksum_columns)
+        target_with_checksum = calculate_checksum(target_df, checksum_columns)
         
-        # Find records only in source
-        only_in_source = source_with_key.join(
-            target_with_key,
-            "composite_key",
-            "left_anti"
-        ).count()
+        # Compare checksums
+        comparison_df = source_with_checksum.alias("src").join(
+            target_with_checksum.alias("tgt"),
+            key_columns,
+            "full_outer"
+        )
         
-        # Find records only in target
-        only_in_target = target_with_key.join(
-            source_with_key,
-            "composite_key",
-            "left_anti"
-        ).count()
-        
-        # Common records
-        common_records = source_with_key.join(
-            target_with_key,
-            "composite_key",
-            "inner"
+        mismatches = comparison_df.filter(
+            col("src.CHECKSUM") != col("tgt.CHECKSUM")
         ).count()
         
         total_records = max(source_df.count(), target_df.count())
-        match_percentage = (common_records / total_records * 100) if total_records > 0 else 0
+        match_percentage = ((total_records - mismatches) / total_records * 100) if total_records > 0 else 100.0
         
-        discrepancies = []
-        if only_in_source > 0:
-            discrepancies.append({
-                "type": "MISSING_IN_TARGET",
-                "count": only_in_source
-            })
-        if only_in_target > 0:
-            discrepancies.append({
-                "type": "EXTRA_IN_TARGET",
-                "count": only_in_target
-            })
+        status = ValidationStatus.PASSED if mismatches == 0 else ValidationStatus.FAILED
         
-        status = ValidationStatus.PASSED if match_percentage == 100.0 else ValidationStatus.FAILED
-        
-        return ValidationResult(
-            validation_type="DATA_QUALITY",
+        result = ValidationResult(
+            workflow_name=workflow_name,
+            validation_type="CHECKSUM",
             status=status,
             source_count=source_df.count(),
             target_count=target_df.count(),
             match_percentage=match_percentage,
-            discrepancies=discrepancies,
-            execution_time_seconds=time.time() - start_time,
+            discrepancies=[{"type": "CHECKSUM_MISMATCH", "count": mismatches}] if mismatches > 0 else [],
+            execution_time=(datetime.now() - start_time).total_seconds(),
             timestamp=datetime.now().isoformat()
         )
+        
+        logger.info(f"Checksum validation: {status.value} - Match percentage: {match_percentage}%")
+        return result
     
-    def validate_aggregates(self, source_df: DataFrame, target_df: DataFrame, 
-                           agg_columns: List[str], group_by_columns: List[str]) -> ValidationResult:
-        start_time = time.time()
-        
-        # Aggregate source
-        source_agg = source_df.groupBy(*group_by_columns).agg(
-            *[F.sum(col).alias(f"source_{col}") for col in agg_columns]
-        )
-        
-        # Aggregate target
-        target_agg = target_df.groupBy(*group_by_columns).agg(
-            *[F.sum(col).alias(f"target_{col}") for col in agg_columns]
-        )
-        
-        # Join and compare
-        comparison = source_agg.join(target_agg, group_by_columns, "outer")
+    def aggregate_validation(self, workflow_name: str,
+                            source_df: Any, target_df: Any,
+                            group_columns: List[str],
+                            agg_columns: List[str]) -> ValidationResult:
+        """Validate aggregate values match"""
+        logger.info("Executing aggregate validation")
+        start_time = datetime.now()
         
         discrepancies = []
-        for col in agg_columns:
-            mismatches = comparison.filter(
-                F.col(f"source_{col}") != F.col(f"target_{col}")
+        
+        # Calculate aggregates for source
+        source_agg = source_df.groupBy(group_columns).agg(
+            *[sum(col(c)).alias(f"{c}_SUM") for c in agg_columns],
+            *[avg(col(c)).alias(f"{c}_AVG") for c in agg_columns],
+            count("*").alias("RECORD_COUNT")
+        )
+        
+        # Calculate aggregates for target
+        target_agg = target_df.groupBy(group_columns).agg(
+            *[sum(col(c)).alias(f"{c}_SUM") for c in agg_columns],
+            *[avg(col(c)).alias(f"{c}_AVG") for c in agg_columns],
+            count("*").alias("RECORD_COUNT")
+        )
+        
+        # Compare aggregates
+        comparison = source_agg.alias("src").join(
+            target_agg.alias("tgt"),
+            group_columns,
+            "full_outer"
+        )
+        
+        for agg_col in agg_columns:
+            sum_mismatch = comparison.filter(
+                abs(col(f"src.{agg_col}_SUM") - col(f"tgt.{agg_col}_SUM")) > 0.01
             ).count()
             
-            if mismatches > 0:
+            if sum_mismatch > 0:
                 discrepancies.append({
-                    "column": col,
-                    "mismatches": mismatches
+                    "type": "AGGREGATE_MISMATCH",
+                    "column": f"{agg_col}_SUM",
+                    "count": sum_mismatch
                 })
         
-        total_groups = comparison.count()
-        matched_groups = comparison.filter(
-            F.concat_ws("||", *[F.col(f"source_{col}") == F.col(f"target_{col}") 
-                               for col in agg_columns])
-        ).count()
+        status = ValidationStatus.PASSED if len(discrepancies) == 0 else ValidationStatus.FAILED
         
-        match_percentage = (matched_groups / total_groups * 100) if total_groups > 0 else 0
-        
-        status = ValidationStatus.PASSED if match_percentage == 100.0 else ValidationStatus.FAILED
-        
-        return ValidationResult(
-            validation_type="AGGREGATES",
+        result = ValidationResult(
+            workflow_name=workflow_name,
+            validation_type="AGGREGATE",
             status=status,
-            source_count=total_groups,
-            target_count=total_groups,
-            match_percentage=match_percentage,
+            source_count=source_df.count(),
+            target_count=target_df.count(),
+            match_percentage=100.0 if len(discrepancies) == 0 else 0.0,
             discrepancies=discrepancies,
-            execution_time_seconds=time.time() - start_time,
+            execution_time=(datetime.now() - start_time).total_seconds(),
             timestamp=datetime.now().isoformat()
         )
-    
-    def validate_null_checks(self, df: DataFrame, non_null_columns: List[str]) -> ValidationResult:
-        start_time = time.time()
         
-        total_records = df.count()
-        discrepancies = []
-        
-        for col in non_null_columns:
-            null_count = df.filter(F.col(col).isNull()).count()
-            if null_count > 0:
-                discrepancies.append({
-                    "column": col,
-                    "null_count": null_count,
-                    "null_percentage": (null_count / total_records * 100) if total_records > 0 else 0
-                })
-        
-        status = ValidationStatus.PASSED if not discrepancies else ValidationStatus.FAILED
-        match_percentage = 100.0 if not discrepancies else 0.0
-        
-        return ValidationResult(
-            validation_type="NULL_CHECKS",
-            status=status,
-            source_count=total_records,
-            target_count=total_records,
-            match_percentage=match_percentage,
-            discrepancies=discrepancies,
-            execution_time_seconds=time.time() - start_time,
-            timestamp=datetime.now().isoformat()
-        )
+        logger.info(f"Aggregate validation: {status.value}")
+        return result
 
 
-class PerformanceTester:
-    """Performance testing and benchmarking framework"""
+class PerformanceTestingFramework:
+    """
+    Framework for performance testing and comparison
+    Compares PySpark performance against Informatica baseline
+    """
     
     def __init__(self, spark: SparkSession):
         self.spark = spark
-        
-    def measure_execution_time(self, workflow_func, *args, **kwargs) -> float:
-        start_time = time.time()
-        workflow_func(*args, **kwargs)
-        return time.time() - start_time
+        self.performance_metrics = []
     
-    def get_memory_usage(self) -> float:
-        # Get Spark executor memory usage
-        sc = self.spark.sparkContext
-        status = sc.statusTracker()
-        executor_info = status.getExecutorInfos()
-        
-        total_memory = sum([exec_info.totalMemory() for exec_info in executor_info])
-        return total_memory / (1024 * 1024)  # Convert to MB
-    
-    def compare_with_baseline(self, current_time: float, baseline_time: float,
-                             records_processed: int) -> PerformanceMetrics:
-        
-        improvement = ((baseline_time - current_time) / baseline_time * 100) if baseline_time > 0 else 0
-        records_per_second = records_processed / current_time if current_time > 0 else 0
-        
-        return PerformanceMetrics(
-            workflow_name="pilot_workflow",
-            execution_time_seconds=current_time,
-            records_processed=records_processed,
-            records_per_second=records_per_second,
-            memory_usage_mb=self.get_memory_usage(),
-            cpu_usage_percent=0.0,  # Would need OS-level metrics
-            baseline_time_seconds=baseline_time,
-            performance_improvement_percent=improvement
-        )
-    
-    def run_performance_tests(self, workflow, source_config: Dict[str, Any],
-                             target_config: Dict[str, Any], 
-                             baseline_time: float) -> PerformanceMetrics:
-        
-        logger.info("Starting performance test")
-        
-        result = workflow.execute(source_config, target_config)
-        
-        metrics = self.compare_with_baseline(
-            current_time=result["execution_time"],
-            baseline_time=baseline_time,
-            records_processed=result.get("source_count", 0)
-        )
-        
-        logger.info(f"Performance test completed: {metrics.performance_improvement_percent:.2f}% improvement")
-        return metrics
-
-
-class OrchestrationManager:
-    """Workflow orchestration and dependency management"""
-    
-    def __init__(self, spark: SparkSession):
-        self.spark = spark
-        self.workflows = {}
-        self.execution_log = []
-        
-    def register_workflow(self, workflow_name: str, workflow_instance: Any):
-        self.workflows[workflow_name] = workflow_instance
-        logger.info(f"Registered workflow: {workflow_name}")
-    
-    def execute_workflow(self, workflow_name: str, source_config: Dict[str, Any],
-                        target_config: Dict[str, Any]) -> Dict[str, Any]:
-        
-        if workflow_name not in self.workflows:
-            raise ValueError(f"Workflow {workflow_name} not registered")
-        
-        workflow = self.workflows[workflow_name]
-        
-        execution_record = {
-            "workflow_name": workflow_name,
-            "start_time": datetime.now().isoformat(),
-            "status": "RUNNING"
-        }
-        
-        try:
-            result = workflow.execute(source_config, target_config)
-            execution_record["status"] = "SUCCESS"
-            execution_record["result"] = result
-            execution_record["end_time"] = datetime.now().isoformat()
-            
-        except Exception as e:
-            execution_record["status"] = "FAILED"
-            execution_record["error"] = str(e)
-            execution_record["end_time"] = datetime.now().isoformat()
-            logger.error(f"Workflow {workflow_name} failed: {str(e)}")
-            raise
-        
-        finally:
-            self.execution_log.append(execution_record)
-        
-        return execution_record
-    
-    def execute_workflow_dag(self, dag_config: List[Dict[str, Any]]):
-        """Execute workflows in dependency order"""
-        
-        for workflow_config in dag_config:
-            workflow_name = workflow_config["name"]
-            dependencies = workflow_config.get("dependencies", [])
-            
-            # Check if dependencies completed successfully
-            for dep in dependencies:
-                dep_log = [log for log in self.execution_log if log["workflow_name"] == dep]
-                if not dep_log or dep_log[-1]["status"] != "SUCCESS":
-                    logger.error(f"Dependency {dep} not satisfied for {workflow_name}")
-                    continue
-            
-            logger.info(f"Executing workflow: {workflow_name}")
-            self.execute_workflow(
-                workflow_name,
-                workflow_config["source_config"],
-                workflow_config["target_config"]
-            )
-    
-    def get_execution_summary(self) -> Dict[str, Any]:
-        total_runs = len(self.execution_log)
-        successful_runs = len([log for log in self.execution_log if log["status"] == "SUCCESS"])
-        failed_runs = len([log for log in self.execution_log if log["status"] == "FAILED"])
-        
-        return {
-            "total_executions": total_runs,
-            "successful": successful_runs,
-            "failed": failed_runs,
-            "success_rate": (successful_runs / total_runs * 100) if total_runs > 0 else 0,
-            "execution_log": self.execution_log
-        }
-
-
-class LessonsLearnedDocumentation:
-    """Document lessons learned and migration gaps"""
-    
-    def __init__(self):
-        self.lessons = []
-        
-    def add_lesson(self, category: str, description: str, impact: str,
-                   recommendation: str, priority: str):
-        
-        lesson = LessonLearned(
-            category=category,
-            description=description,
-            impact=impact,
-            recommendation=recommendation,
-            priority=priority
-        )
-        self.lessons.append(lesson)
-        logger.info(f"Documented lesson learned: {category} - {description}")
-    
-    def generate_report(self) -> Dict[str, Any]:
-        return {
-            "total_lessons": len(self.lessons),
-            "by_category": self._group_by_category(),
-            "by_priority": self._group_by_priority(),
-            "lessons": [asdict(lesson) for lesson in self.lessons]
-        }
-    
-    def _group_by_category(self) -> Dict[str, int]:
-        categories = {}
-        for lesson in self.lessons:
-            categories[lesson.category] = categories.get(lesson.category, 0) + 1
-        return categories
-    
-    def _group_by_priority(self) -> Dict[str, int]:
-        priorities = {}
-        for lesson in self.lessons:
-            priorities[lesson.priority] = priorities.get(lesson.priority, 0) + 1
-        return priorities
+    def measure_execution_time(self, workflow_name:
