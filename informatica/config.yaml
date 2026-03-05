@@ -1,118 +1,98 @@
-# NiFi Migration Configuration for m_LOAD_STG_SALES
-# Extract, Filter and Transform sales staging data with quality filters
+# NiFi Configuration for Daily Sales Load Workflow
+# Migration from Informatica wf_DAILY_SALES_LOAD
 
 nifi:
   base_url: "http://localhost:8080/nifi-api"
-  process_group_name: "LOAD_STG_SALES"
+  root_pg_id: "root"
+  username: "admin"
+  password: "admin"
+
+workflow:
+  name: "DAILY_SALES_LOAD"
+  description: "Daily incremental load of sales data from CSV files"
+  process_group_name: "Daily_Sales_ETL"
   
-source:
-  type: "csv"
-  file_path: "/data/source/sales_transactions_*.csv"
-  file_pattern: "sales_transactions_.*\\.csv"
-  delimiter: ","
-  has_header: true
-  encoding: "UTF-8"
-  
-  # Source fields schema
-  fields:
-    - name: "TRANSACTION_ID"
-      type: "string"
-      length: 30
-    - name: "TRANSACTION_DATE"
-      type: "datetime"
-      format: "%Y-%m-%d %H:%M:%S"
-    - name: "CUSTOMER_ID"
-      type: "string"
-      length: 20
-    - name: "PRODUCT_ID"
-      type: "string"
-      length: 20
-    - name: "QUANTITY"
-      type: "integer"
-    - name: "UNIT_PRICE"
-      type: "decimal"
-      precision: 10
-      scale: 2
-    - name: "DISCOUNT_PERCENT"
-      type: "decimal"
-      precision: 5
-      scale: 2
-    - name: "TAX_AMOUNT"
-      type: "decimal"
-      precision: 10
-      scale: 2
-    - name: "TOTAL_AMOUNT"
-      type: "decimal"
-      precision: 10
-      scale: 2
-    - name: "PAYMENT_METHOD"
-      type: "string"
-      length: 20
-    - name: "STORE_ID"
-      type: "string"
-      length: 20
-    - name: "REGION"
-      type: "string"
-      length: 50
-
-# Quality filters (from Source Qualifier filter condition)
-quality_filters:
-  quantity_threshold: 0  # QUANTITY > 0
-  total_amount_threshold: 0  # TOTAL_AMOUNT > 0
-
-# Transformation metadata
-metadata:
-  load_date_field: "LOAD_DATE"
-  source_system: "CSV_FILE"
-  record_id_field: "RECORD_ID"
-  record_id_start: 1
-  record_id_increment: 1
-
-target:
-  type: "database"
-  connection_pool: "STG_DATABASE_CONNECTION_POOL"
-  table_name: "STG_SALES"
-  schema: "staging"
-  load_type: "normal"
+parameters:
+  last_extract_date: "2024-01-01 00:00:00"
+  current_extract_date: "now"
+  source_file_path: "/data/source/"
+  archive_path: "/data/archive/"
+  error_email_to: "etl-team@company.com"
   commit_interval: 10000
-  
-  # Target fields
-  fields:
-    - "RECORD_ID"
-    - "TRANSACTION_ID"
-    - "TRANSACTION_DATE"
-    - "CUSTOMER_ID"
-    - "PRODUCT_ID"
-    - "QUANTITY"
-    - "UNIT_PRICE"
-    - "DISCOUNT_PERCENT"
-    - "TAX_AMOUNT"
-    - "TOTAL_AMOUNT"
-    - "PAYMENT_METHOD"
-    - "STORE_ID"
-    - "REGION"
-    - "LOAD_DATE"
-    - "SOURCE_SYSTEM"
+  bulk_commit_interval: 50000
+
+source_files:
+  customer:
+    name: "customer_master.csv"
+    pattern: "customer_master\\.csv"
+    delimiter: ","
+    header: true
+    staging_table: "STG_CUSTOMER"
+    
+  product:
+    name: "product_master.csv"
+    pattern: "product_master\\.csv"
+    delimiter: ","
+    header: true
+    staging_table: "STG_PRODUCT"
+    
+  sales:
+    name: "sales_transactions_*.csv"
+    pattern: "sales_transactions_.*\\.csv"
+    delimiter: ","
+    header: true
+    staging_table: "STG_SALES"
+
+database:
+  connection_pool_name: "DatabaseConnectionPool"
+  driver_class: "org.postgresql.Driver"
+  url: "jdbc:postgresql://localhost:5432/datawarehouse"
+  username: "etl_user"
+  password: "etl_password"
+  max_connections: 10
+  validation_query: "SELECT 1"
+
+staging_queries:
+  customer:
+    incremental_filter: "LOAD_DATE >= ${last_extract_date}"
+    columns: "CUSTOMER_ID, FIRST_NAME, LAST_NAME, EMAIL, PHONE, ADDRESS, CITY, STATE, ZIP_CODE, COUNTRY, REGISTRATION_DATE, CUSTOMER_TYPE, SOURCE_SYSTEM"
+    
+  product:
+    incremental_filter: "LOAD_DATE >= ${last_extract_date}"
+    columns: "PRODUCT_ID, PRODUCT_NAME, PRODUCT_DESCRIPTION, CATEGORY, SUB_CATEGORY, BRAND, UNIT_PRICE, COST_PRICE, SUPPLIER_ID, SUPPLIER_NAME, WEIGHT, DIMENSIONS, COLOR, SIZE, MATERIAL, STATUS, SOURCE_SYSTEM"
+    
+  sales:
+    incremental_filter: "LOAD_DATE >= ${last_extract_date}"
+    columns: "TRANSACTION_ID, TRANSACTION_DATE, CUSTOMER_ID, PRODUCT_ID, QUANTITY, UNIT_PRICE, DISCOUNT_PERCENT, TAX_AMOUNT, TOTAL_AMOUNT, PAYMENT_METHOD, STORE_ID, REGION, SOURCE_SYSTEM"
+
+dimension_tables:
+  customer:
+    name: "DIM_CUSTOMER"
+    key_column: "CUSTOMER_KEY"
+    scd_type: 2
+    
+  product:
+    name: "DIM_PRODUCT"
+    key_column: "PRODUCT_KEY"
+    scd_type: 1
+
+fact_tables:
+  sales:
+    name: "FACT_SALES"
+    key_column: "SALES_KEY"
+
+email:
+  smtp_host: "smtp.company.com"
+  smtp_port: 587
+  from_address: "nifi-etl@company.com"
+  use_tls: true
+
+logging:
+  level: "INFO"
+  log_path: "/var/log/nifi/sales_etl/"
 
 error_handling:
-  error_table: "STG_SALES_ERRORS"
-  error_log_path: "/data/logs/sales_staging_errors.log"
-  max_retry_attempts: 3
-  retry_delay_seconds: 5
-
-monitoring:
-  log_level: "INFO"
-  success_notification_email: "etl-team@company.com"
-  failure_notification_email: "etl-team@company.com"
-  
-performance:
-  batch_size: 1000
-  concurrent_tasks: 4
-  buffer_size: 10000
-  
-validation:
-  enforce_schema: true
-  allow_null_customer_id: false
-  allow_null_product_id: false
-  allow_negative_quantity: false
-  allow_negative_amount: false
+  max_retries: 3
+  retry_delay_seconds: 60
+  send_failure_email: true
+  continue_on_error: false
