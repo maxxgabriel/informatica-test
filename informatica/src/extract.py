@@ -1,281 +1,238 @@
 """
-Extract module for Customer Dimension ETL
-Reads customer data from staging table with incremental load support
+Extract module for Product Dimension ETL
+Reads product data from staging table
 """
-
 import logging
+from typing import List, Dict, Any
 from datetime import datetime
-from typing import Dict, List, Optional
-import pandas as pd
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 logger = logging.getLogger(__name__)
 
 
-class CustomerExtractor:
-    """Extract customer data from staging table"""
+class ProductExtractor:
+    """Extract product data from staging table"""
     
-    def __init__(self, db_engine: Engine, config: Dict):
+    def __init__(self, config: Dict[str, Any]):
         """
-        Initialize extractor
+        Initialize extractor with configuration
         
         Args:
-            db_engine: SQLAlchemy database engine
-            config: Configuration dictionary
+            config: Database and extraction configuration
         """
-        self.engine = db_engine
         self.config = config
-        self.staging_table = config.get('staging_table', 'STG_CUSTOMER')
+        self.db_config = config['database']
+        self.extract_config = config['extract']
+        self.connection = None
         
-    def extract_incremental(self, last_extract_date: Optional[datetime] = None) -> pd.DataFrame:
+    def connect(self) -> None:
+        """Establish database connection"""
+        try:
+            self.connection = psycopg2.connect(
+                host=self.db_config['host'],
+                port=self.db_config['port'],
+                database=self.db_config['database'],
+                user=self.db_config['user'],
+                password=self.db_config['password']
+            )
+            logger.info("Database connection established")
+        except Exception as e:
+            logger.error(f"Failed to connect to database: {e}")
+            raise
+            
+    def disconnect(self) -> None:
+        """Close database connection"""
+        if self.connection:
+            self.connection.close()
+            logger.info("Database connection closed")
+            
+    def extract_products(self, last_extract_date: datetime = None) -> List[Dict[str, Any]]:
         """
-        Extract customer records since last extract date
+        Extract product records from staging table
         
         Args:
-            last_extract_date: Date of last extraction. If None, uses config default
+            last_extract_date: Extract records loaded after this date (incremental)
             
         Returns:
-            DataFrame with customer records
+            List of product records as dictionaries
         """
-        if last_extract_date is None:
-            last_extract_date = self.config.get('default_extract_date', 
-                                               datetime.now().replace(hour=0, minute=0, second=0, microsecond=0))
+        if not self.connection:
+            self.connect()
+            
+        try:
+            with self.connection.cursor(cursor_factory=RealDictCursor) as cursor:
+                query = self._build_extract_query(last_extract_date)
+                logger.info(f"Executing extract query: {query}")
+                
+                cursor.execute(query, {'last_extract_date': last_extract_date} if last_extract_date else None)
+                products = cursor.fetchall()
+                
+                logger.info(f"Extracted {len(products)} product records")
+                return [dict(row) for row in products]
+                
+        except Exception as e:
+            logger.error(f"Error extracting products: {e}")
+            raise
+            
+    def _build_extract_query(self, last_extract_date: datetime = None) -> str:
+        """
+        Build SQL query for extraction
         
-        query = text(f"""
+        Args:
+            last_extract_date: Optional date filter for incremental loads
+            
+        Returns:
+            SQL query string
+        """
+        base_query = """
             SELECT
-                CUSTOMER_ID,
-                FIRST_NAME,
-                LAST_NAME,
-                EMAIL,
-                PHONE,
-                ADDRESS,
-                CITY,
-                STATE,
-                ZIP_CODE,
-                COUNTRY,
-                REGISTRATION_DATE,
-                CUSTOMER_TYPE,
+                PRODUCT_ID,
+                PRODUCT_NAME,
+                PRODUCT_DESCRIPTION,
+                CATEGORY,
+                SUB_CATEGORY,
+                BRAND,
+                UNIT_PRICE,
+                COST_PRICE,
+                SUPPLIER_ID,
+                SUPPLIER_NAME,
+                WEIGHT,
+                DIMENSIONS,
+                COLOR,
+                SIZE,
+                MATERIAL,
+                STATUS,
                 SOURCE_SYSTEM,
                 LOAD_DATE
-            FROM {self.staging_table}
-            WHERE LOAD_DATE >= :last_extract_date
-            ORDER BY CUSTOMER_ID
-        """)
+            FROM {staging_table}
+        """.format(staging_table=self.extract_config['staging_table'])
         
-        try:
-            logger.info(f"Extracting customers from {self.staging_table} since {last_extract_date}")
+        if last_extract_date:
+            base_query += "\nWHERE LOAD_DATE >= %(last_extract_date)s"
             
-            with self.engine.connect() as conn:
-                df = pd.read_sql(query, conn, params={'last_extract_date': last_extract_date})
-            
-            logger.info(f"Extracted {len(df)} customer records")
-            
-            # Validate extracted data
-            self._validate_extraction(df)
-            
-            return df
-            
-        except Exception as e:
-            logger.error(f"Error extracting customer data: {str(e)}")
-            raise
-    
-    def extract_full(self) -> pd.DataFrame:
+        base_query += "\nORDER BY PRODUCT_ID"
+        
+        return base_query
+        
+    def get_last_extract_date(self) -> datetime:
         """
-        Extract all customer records (full refresh)
+        Get last successful extract date from control table
         
         Returns:
-            DataFrame with all customer records
+            Last extract date or None for full load
         """
-        query = text(f"""
-            SELECT
-                CUSTOMER_ID,
-                FIRST_NAME,
-                LAST_NAME,
-                EMAIL,
-                PHONE,
-                ADDRESS,
-                CITY,
-                STATE,
-                ZIP_CODE,
-                COUNTRY,
-                REGISTRATION_DATE,
-                CUSTOMER_TYPE,
-                SOURCE_SYSTEM,
-                LOAD_DATE
-            FROM {self.staging_table}
-            ORDER BY CUSTOMER_ID
-        """)
-        
+        if not self.connection:
+            self.connect()
+            
         try:
-            logger.info(f"Extracting all customers from {self.staging_table}")
-            
-            with self.engine.connect() as conn:
-                df = pd.read_sql(query, conn)
-            
-            logger.info(f"Extracted {len(df)} customer records (full)")
-            
-            self._validate_extraction(df)
-            
-            return df
-            
+            with self.connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT MAX(last_extract_date) as last_date
+                    FROM etl_control
+                    WHERE table_name = %s
+                    AND status = 'SUCCESS'
+                """, (self.extract_config['staging_table'],))
+                
+                result = cursor.fetchone()
+                last_date = result[0] if result and result[0] else None
+                
+                logger.info(f"Last extract date: {last_date}")
+                return last_date
+                
         except Exception as e:
-            logger.error(f"Error extracting customer data (full): {str(e)}")
-            raise
-    
-    def _validate_extraction(self, df: pd.DataFrame) -> None:
+            logger.warning(f"Could not retrieve last extract date: {e}")
+            return None
+            
+    def update_extract_control(self, extract_date: datetime, status: str, records_count: int) -> None:
         """
-        Validate extracted data
+        Update control table with extract statistics
         
         Args:
-            df: DataFrame to validate
+            extract_date: Current extract date
+            status: SUCCESS or FAILURE
+            records_count: Number of records extracted
+        """
+        if not self.connection:
+            self.connect()
             
-        Raises:
-            ValueError: If validation fails
-        """
-        if df.empty:
-            logger.warning("No records extracted")
-            return
-        
-        # Check for required columns
-        required_columns = ['CUSTOMER_ID', 'FIRST_NAME', 'LAST_NAME']
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        
-        if missing_columns:
-            raise ValueError(f"Missing required columns: {missing_columns}")
-        
-        # Check for null customer IDs
-        null_count = df['CUSTOMER_ID'].isnull().sum()
-        if null_count > 0:
-            logger.warning(f"Found {null_count} records with null CUSTOMER_ID")
-        
-        # Check for duplicates
-        dup_count = df.duplicated(subset=['CUSTOMER_ID']).sum()
-        if dup_count > 0:
-            logger.warning(f"Found {dup_count} duplicate CUSTOMER_ID values")
-        
-        logger.info("Extraction validation completed")
-    
-    def get_record_count(self, last_extract_date: Optional[datetime] = None) -> int:
-        """
-        Get count of records to be extracted
-        
-        Args:
-            last_extract_date: Date of last extraction
-            
-        Returns:
-            Number of records to extract
-        """
-        if last_extract_date is None:
-            last_extract_date = self.config.get('default_extract_date',
-                                               datetime.now().replace(hour=0, minute=0, second=0, microsecond=0))
-        
-        query = text(f"""
-            SELECT COUNT(*) as cnt
-            FROM {self.staging_table}
-            WHERE LOAD_DATE >= :last_extract_date
-        """)
-        
         try:
-            with self.engine.connect() as conn:
-                result = conn.execute(query, {'last_extract_date': last_extract_date})
-                count = result.scalar()
-            
-            logger.info(f"Record count for extraction: {count}")
-            return count
-            
+            with self.connection.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO etl_control 
+                    (table_name, last_extract_date, status, records_count, updated_date)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (
+                    self.extract_config['staging_table'],
+                    extract_date,
+                    status,
+                    records_count,
+                    datetime.now()
+                ))
+                
+                self.connection.commit()
+                logger.info(f"Control table updated: {status}, {records_count} records")
+                
         except Exception as e:
-            logger.error(f"Error getting record count: {str(e)}")
-            raise
+            logger.error(f"Failed to update control table: {e}")
+            self.connection.rollback()
 
 
-class DimensionLookup:
-    """Lookup existing dimension records for SCD processing"""
+def extract_product_data(config: Dict[str, Any], incremental: bool = True) -> List[Dict[str, Any]]:
+    """
+    Main function to extract product data
     
-    def __init__(self, db_engine: Engine, config: Dict):
-        """
-        Initialize lookup
+    Args:
+        config: Configuration dictionary
+        incremental: If True, perform incremental extract; if False, full extract
         
-        Args:
-            db_engine: SQLAlchemy database engine
-            config: Configuration dictionary
-        """
-        self.engine = db_engine
-        self.config = config
-        self.dimension_table = config.get('dimension_table', 'DIM_CUSTOMER')
+    Returns:
+        List of product records
+    """
+    extractor = ProductExtractor(config)
     
-    def lookup_current_records(self, customer_ids: List[str]) -> pd.DataFrame:
-        """
-        Lookup current dimension records for given customer IDs
+    try:
+        extractor.connect()
         
-        Args:
-            customer_ids: List of customer IDs to lookup
-            
-        Returns:
-            DataFrame with current dimension records
-        """
-        if not customer_ids:
-            return pd.DataFrame()
+        # Get last extract date for incremental load
+        last_extract_date = extractor.get_last_extract_date() if incremental else None
         
-        # Create placeholders for IN clause
-        placeholders = ','.join([f':id_{i}' for i in range(len(customer_ids))])
-        params = {f'id_{i}': cid for i, cid in enumerate(customer_ids)}
+        # Extract products
+        products = extractor.extract_products(last_extract_date)
         
-        query = text(f"""
-            SELECT
-                CUSTOMER_KEY,
-                CUSTOMER_ID,
-                FIRST_NAME,
-                LAST_NAME,
-                EMAIL,
-                PHONE,
-                ADDRESS,
-                CITY,
-                STATE,
-                ZIP_CODE,
-                COUNTRY,
-                EFFECTIVE_FROM_DATE,
-                EFFECTIVE_TO_DATE,
-                IS_CURRENT
-            FROM {self.dimension_table}
-            WHERE CUSTOMER_ID IN ({placeholders})
-            AND IS_CURRENT = 'Y'
-        """)
+        # Update control table
+        extractor.update_extract_control(
+            extract_date=datetime.now(),
+            status='SUCCESS',
+            records_count=len(products)
+        )
         
-        try:
-            logger.info(f"Looking up {len(customer_ids)} customer records in dimension")
-            
-            with self.engine.connect() as conn:
-                df = pd.read_sql(query, conn, params=params)
-            
-            logger.info(f"Found {len(df)} existing dimension records")
-            
-            return df
-            
-        except Exception as e:
-            logger.error(f"Error looking up dimension records: {str(e)}")
-            raise
+        return products
+        
+    except Exception as e:
+        logger.error(f"Extract failed: {e}")
+        extractor.update_extract_control(
+            extract_date=datetime.now(),
+            status='FAILURE',
+            records_count=0
+        )
+        raise
+        
+    finally:
+        extractor.disconnect()
+
+
+if __name__ == "__main__":
+    # Test extraction
+    import yaml
     
-    def get_max_customer_key(self) -> int:
-        """
-        Get maximum customer key value
-        
-        Returns:
-            Maximum customer key or 0 if table is empty
-        """
-        query = text(f"""
-            SELECT COALESCE(MAX(CUSTOMER_KEY), 0) as max_key
-            FROM {self.dimension_table}
-        """)
-        
-        try:
-            with self.engine.connect() as conn:
-                result = conn.execute(query)
-                max_key = result.scalar()
-            
-            logger.info(f"Maximum CUSTOMER_KEY: {max_key}")
-            return max_key
-            
-        except Exception as e:
-            logger.error(f"Error getting max customer key: {str(e)}")
-            raise
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    with open('config.yaml', 'r') as f:
+        config = yaml.safe_load(f)
+    
+    products = extract_product_data(config, incremental=True)
+    print(f"Extracted {len(products)} products")
