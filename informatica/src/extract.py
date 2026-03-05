@@ -1,166 +1,278 @@
 """
-Extract module for m_LOAD_STG_SALES
-Handles CSV file extraction with pattern matching and schema validation
+CSV File Extraction Module for Daily Sales Load
+Handles reading CSV files with delimiter parsing and incremental filtering
 """
 
-import os
-import glob
 import logging
-from typing import List, Dict, Any, Generator
-import pandas as pd
+import os
 from datetime import datetime
+from typing import Dict, List, Optional
+import pandas as pd
 import yaml
 
-logger = logging.getLogger(__name__)
 
-
-class SalesDataExtractor:
-    """Extract sales transaction data from CSV files"""
+class CSVExtractor:
+    """Extract data from CSV files for staging tables"""
     
     def __init__(self, config_path: str = "config.yaml"):
-        """Initialize extractor with configuration"""
+        """
+        Initialize CSV extractor with configuration
+        
+        Args:
+            config_path: Path to configuration file
+        """
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
         
-        self.source_config = self.config['source']
-        self.validation_config = self.config['validation']
+        self.source_path = self.config['parameters']['source_file_path']
+        self.logger = self._setup_logging()
         
-    def get_source_files(self) -> List[str]:
-        """Get list of source files matching the pattern"""
-        file_path = self.source_config['file_path']
+    def _setup_logging(self) -> logging.Logger:
+        """Configure logging"""
+        log_path = self.config['logging']['log_path']
+        os.makedirs(log_path, exist_ok=True)
         
-        # Handle glob pattern
-        if '*' in file_path:
-            files = glob.glob(file_path)
-            logger.info(f"Found {len(files)} files matching pattern: {file_path}")
-            return sorted(files)
-        else:
-            if os.path.exists(file_path):
-                logger.info(f"Found single file: {file_path}")
-                return [file_path]
-            else:
-                raise FileNotFoundError(f"Source file not found: {file_path}")
+        logging.basicConfig(
+            level=self.config['logging']['level'],
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(f"{log_path}/extract_{datetime.now().strftime('%Y%m%d')}.log"),
+                logging.StreamHandler()
+            ]
+        )
+        return logging.getLogger(__name__)
     
-    def validate_schema(self, df: pd.DataFrame) -> bool:
-        """Validate DataFrame schema against configuration"""
-        expected_fields = [field['name'] for field in self.source_config['fields']]
-        actual_fields = df.columns.tolist()
+    def extract_customer_data(self) -> pd.DataFrame:
+        """
+        Extract customer data from CSV file
         
-        missing_fields = set(expected_fields) - set(actual_fields)
-        if missing_fields:
-            raise ValueError(f"Missing required fields: {missing_fields}")
+        Returns:
+            DataFrame with customer data
+        """
+        self.logger.info("Starting customer data extraction")
         
-        extra_fields = set(actual_fields) - set(expected_fields)
-        if extra_fields and self.validation_config['enforce_schema']:
-            logger.warning(f"Extra fields found (will be ignored): {extra_fields}")
-        
-        return True
-    
-    def parse_datatypes(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Parse and convert datatypes based on configuration"""
-        for field in self.source_config['fields']:
-            field_name = field['name']
-            field_type = field['type']
-            
-            if field_name not in df.columns:
-                continue
-            
-            try:
-                if field_type == 'integer':
-                    df[field_name] = pd.to_numeric(df[field_name], errors='coerce').astype('Int64')
-                
-                elif field_type == 'decimal':
-                    df[field_name] = pd.to_numeric(df[field_name], errors='coerce').round(field.get('scale', 2))
-                
-                elif field_type == 'datetime':
-                    date_format = field.get('format', '%Y-%m-%d %H:%M:%S')
-                    df[field_name] = pd.to_datetime(df[field_name], format=date_format, errors='coerce')
-                
-                elif field_type == 'string':
-                    df[field_name] = df[field_name].astype(str).str.strip()
-                    max_length = field.get('length')
-                    if max_length:
-                        df[field_name] = df[field_name].str[:max_length]
-            
-            except Exception as e:
-                logger.error(f"Error parsing field {field_name}: {str(e)}")
-                raise
-        
-        return df
-    
-    def extract_from_file(self, file_path: str) -> pd.DataFrame:
-        """Extract data from a single CSV file"""
-        logger.info(f"Extracting data from: {file_path}")
+        file_config = self.config['source_files']['customer']
+        file_path = os.path.join(self.source_path, file_config['name'])
         
         try:
             df = pd.read_csv(
                 file_path,
-                delimiter=self.source_config['delimiter'],
-                encoding=self.source_config['encoding'],
-                header=0 if self.source_config['has_header'] else None
+                delimiter=file_config['delimiter'],
+                header=0 if file_config['header'] else None
             )
             
-            logger.info(f"Extracted {len(df)} rows from {file_path}")
+            # Add metadata columns
+            df['LOAD_DATE'] = datetime.now()
+            df['SOURCE_SYSTEM'] = 'CSV_FILE'
+            df['RECORD_ID'] = range(1, len(df) + 1)
             
-            # Validate schema
-            self.validate_schema(df)
-            
-            # Parse datatypes
-            df = self.parse_datatypes(df)
-            
-            # Add source file metadata
-            df['_source_file'] = os.path.basename(file_path)
-            df['_extract_timestamp'] = datetime.now()
-            
+            self.logger.info(f"Extracted {len(df)} customer records from {file_path}")
             return df
-        
+            
+        except FileNotFoundError:
+            self.logger.error(f"Customer file not found: {file_path}")
+            raise
         except Exception as e:
-            logger.error(f"Error extracting from {file_path}: {str(e)}")
+            self.logger.error(f"Error extracting customer data: {str(e)}")
             raise
     
-    def extract_all(self) -> Generator[pd.DataFrame, None, None]:
-        """Extract data from all source files"""
-        files = self.get_source_files()
+    def extract_product_data(self) -> pd.DataFrame:
+        """
+        Extract product data from CSV file
         
-        if not files:
-            logger.warning("No source files found")
-            return
+        Returns:
+            DataFrame with product data
+        """
+        self.logger.info("Starting product data extraction")
         
-        for file_path in files:
-            try:
-                df = self.extract_from_file(file_path)
-                yield df
-            except Exception as e:
-                logger.error(f"Failed to extract from {file_path}: {str(e)}")
-                if self.config['error_handling']['max_retry_attempts'] == 0:
-                    raise
-                continue
+        file_config = self.config['source_files']['product']
+        file_path = os.path.join(self.source_path, file_config['name'])
+        
+        try:
+            df = pd.read_csv(
+                file_path,
+                delimiter=file_config['delimiter'],
+                header=0 if file_config['header'] else None
+            )
+            
+            # Add metadata columns
+            df['LOAD_DATE'] = datetime.now()
+            df['SOURCE_SYSTEM'] = 'CSV_FILE'
+            df['RECORD_ID'] = range(1, len(df) + 1)
+            
+            # Convert numeric columns
+            numeric_cols = ['UNIT_PRICE', 'COST_PRICE', 'WEIGHT']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            self.logger.info(f"Extracted {len(df)} product records from {file_path}")
+            return df
+            
+        except FileNotFoundError:
+            self.logger.error(f"Product file not found: {file_path}")
+            raise
+        except Exception as e:
+            self.logger.error(f"Error extracting product data: {str(e)}")
+            raise
     
-    def extract_batch(self, batch_size: int = None) -> pd.DataFrame:
-        """Extract all data and return as single DataFrame"""
-        if batch_size is None:
-            batch_size = self.config['performance']['batch_size']
+    def extract_sales_data(self) -> pd.DataFrame:
+        """
+        Extract sales transaction data from CSV files (supports wildcards)
         
-        all_data = []
-        for df in self.extract_all():
-            all_data.append(df)
+        Returns:
+            DataFrame with sales data
+        """
+        self.logger.info("Starting sales data extraction")
         
-        if not all_data:
-            return pd.DataFrame()
+        file_config = self.config['source_files']['sales']
+        pattern = file_config['pattern']
         
-        combined_df = pd.concat(all_data, ignore_index=True)
-        logger.info(f"Total extracted rows: {len(combined_df)}")
+        try:
+            # Find all matching files
+            import glob
+            file_pattern = os.path.join(self.source_path, file_config['name'])
+            matching_files = glob.glob(file_pattern)
+            
+            if not matching_files:
+                self.logger.warning(f"No sales files found matching pattern: {file_pattern}")
+                return pd.DataFrame()
+            
+            # Read and combine all matching files
+            dfs = []
+            for file_path in matching_files:
+                self.logger.info(f"Reading file: {file_path}")
+                df = pd.read_csv(
+                    file_path,
+                    delimiter=file_config['delimiter'],
+                    header=0 if file_config['header'] else None
+                )
+                dfs.append(df)
+            
+            combined_df = pd.concat(dfs, ignore_index=True)
+            
+            # Add metadata columns
+            combined_df['LOAD_DATE'] = datetime.now()
+            combined_df['SOURCE_SYSTEM'] = 'CSV_FILE'
+            combined_df['RECORD_ID'] = range(1, len(combined_df) + 1)
+            
+            # Convert numeric columns
+            numeric_cols = ['QUANTITY', 'UNIT_PRICE', 'DISCOUNT_PERCENT', 'TAX_AMOUNT', 'TOTAL_AMOUNT']
+            for col in numeric_cols:
+                if col in combined_df.columns:
+                    combined_df[col] = pd.to_numeric(combined_df[col], errors='coerce')
+            
+            # Convert date columns
+            if 'TRANSACTION_DATE' in combined_df.columns:
+                combined_df['TRANSACTION_DATE'] = pd.to_datetime(combined_df['TRANSACTION_DATE'], errors='coerce')
+            
+            # Apply source filter (QUANTITY > 0 AND TOTAL_AMOUNT > 0)
+            filtered_df = combined_df[
+                (combined_df['QUANTITY'] > 0) & 
+                (combined_df['TOTAL_AMOUNT'] > 0)
+            ]
+            
+            self.logger.info(f"Extracted {len(filtered_df)} sales records from {len(matching_files)} files")
+            return filtered_df
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting sales data: {str(e)}")
+            raise
+    
+    def validate_extracted_data(self, df: pd.DataFrame, data_type: str) -> bool:
+        """
+        Validate extracted data for required columns and data quality
         
-        return combined_df
+        Args:
+            df: DataFrame to validate
+            data_type: Type of data (customer, product, sales)
+            
+        Returns:
+            True if validation passes
+        """
+        self.logger.info(f"Validating {data_type} data")
+        
+        if df.empty:
+            self.logger.error(f"No data extracted for {data_type}")
+            return False
+        
+        # Check for required metadata columns
+        required_metadata = ['LOAD_DATE', 'SOURCE_SYSTEM', 'RECORD_ID']
+        missing_cols = [col for col in required_metadata if col not in df.columns]
+        
+        if missing_cols:
+            self.logger.error(f"Missing required metadata columns: {missing_cols}")
+            return False
+        
+        # Data-specific validations
+        if data_type == 'customer':
+            required = ['CUSTOMER_ID', 'FIRST_NAME', 'LAST_NAME']
+        elif data_type == 'product':
+            required = ['PRODUCT_ID', 'PRODUCT_NAME', 'CATEGORY']
+        elif data_type == 'sales':
+            required = ['TRANSACTION_ID', 'CUSTOMER_ID', 'PRODUCT_ID', 'QUANTITY', 'TOTAL_AMOUNT']
+        else:
+            required = []
+        
+        missing_required = [col for col in required if col not in df.columns]
+        if missing_required:
+            self.logger.error(f"Missing required columns for {data_type}: {missing_required}")
+            return False
+        
+        # Check for null values in key columns
+        null_counts = df[required].isnull().sum()
+        if null_counts.any():
+            self.logger.warning(f"Null values found in key columns:\n{null_counts[null_counts > 0]}")
+        
+        self.logger.info(f"Validation passed for {data_type} data")
+        return True
+    
+    def extract_all(self) -> Dict[str, pd.DataFrame]:
+        """
+        Extract all data sources
+        
+        Returns:
+            Dictionary with extracted DataFrames
+        """
+        self.logger.info("Starting full data extraction")
+        
+        results = {}
+        
+        try:
+            # Extract customer data
+            customer_df = self.extract_customer_data()
+            if self.validate_extracted_data(customer_df, 'customer'):
+                results['customer'] = customer_df
+            
+            # Extract product data
+            product_df = self.extract_product_data()
+            if self.validate_extracted_data(product_df, 'product'):
+                results['product'] = product_df
+            
+            # Extract sales data
+            sales_df = self.extract_sales_data()
+            if self.validate_extracted_data(sales_df, 'sales'):
+                results['sales'] = sales_df
+            
+            self.logger.info(f"Extraction complete. Extracted {len(results)} data sources")
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"Error in full extraction: {str(e)}")
+            raise
+
+
+def main():
+    """Main execution function for testing"""
+    extractor = CSVExtractor()
+    data = extractor.extract_all()
+    
+    for source, df in data.items():
+        print(f"\n{source.upper()} Data:")
+        print(f"Records: {len(df)}")
+        print(f"Columns: {list(df.columns)}")
+        print(df.head())
 
 
 if __name__ == "__main__":
-    # Test extraction
-    logging.basicConfig(level=logging.INFO)
-    
-    extractor = SalesDataExtractor()
-    df = extractor.extract_batch()
-    
-    print(f"\nExtracted {len(df)} total rows")
-    print(f"\nSample data:\n{df.head()}")
-    print(f"\nData types:\n{df.dtypes}")
+    main()
