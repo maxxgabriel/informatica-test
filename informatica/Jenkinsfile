@@ -1,0 +1,194 @@
+pipeline {
+    agent any
+
+    environment {
+        PYTHON_VERSION = '3.9'
+        VENV_DIR = 'venv'
+        NIFI_HOST = credentials('nifi-host')
+        NIFI_USERNAME = credentials('nifi-username')
+        NIFI_PASSWORD = credentials('nifi-password')
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timestamps()
+        timeout(time: 1, unit: 'HOURS')
+    }
+
+    triggers {
+        cron('H 2 * * *')  // Daily at 2 AM
+        pollSCM('H/15 * * * *')  // Poll every 15 minutes
+    }
+
+    stages {
+        stage('Setup') {
+            steps {
+                echo 'Setting up Python environment...'
+                sh '''
+                    python${PYTHON_VERSION} -m venv ${VENV_DIR}
+                    . ${VENV_DIR}/bin/activate
+                    pip install --upgrade pip
+                    pip install -r requirements.txt
+                '''
+            }
+        }
+
+        stage('Code Quality') {
+            parallel {
+                stage('Formatting Check') {
+                    steps {
+                        echo 'Checking code formatting...'
+                        sh '''
+                            . ${VENV_DIR}/bin/activate
+                            black --check src/ tests/
+                        '''
+                    }
+                }
+
+                stage('Import Sorting') {
+                    steps {
+                        echo 'Checking import sorting...'
+                        sh '''
+                            . ${VENV_DIR}/bin/activate
+                            isort --check-only src/ tests/
+                        '''
+                    }
+                }
+
+                stage('Linting') {
+                    steps {
+                        echo 'Running linters...'
+                        sh '''
+                            . ${VENV_DIR}/bin/activate
+                            flake8 src/ tests/ --max-line-length=100 --extend-ignore=E203,W503
+                            pylint src/ --max-line-length=100 --disable=C0111,C0103,R0913,R0914
+                        '''
+                    }
+                }
+
+                stage('Type Checking') {
+                    steps {
+                        echo 'Running type checker...'
+                        sh '''
+                            . ${VENV_DIR}/bin/activate
+                            mypy src/ --ignore-missing-imports
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Security Scan') {
+            steps {
+                echo 'Running security scans...'
+                sh '''
+                    . ${VENV_DIR}/bin/activate
+                    safety check || true
+                    bandit -r src/ -f json -o bandit-report.json || true
+                '''
+                archiveArtifacts artifacts: 'bandit-report.json', allowEmptyArchive: true
+            }
+        }
+
+        stage('Unit Tests') {
+            steps {
+                echo 'Running unit tests...'
+                sh '''
+                    . ${VENV_DIR}/bin/activate
+                    pytest tests/ \
+                        --verbose \
+                        --cov=src \
+                        --cov-report=xml \
+                        --cov-report=html \
+                        --cov-report=term-missing \
+                        --cov-fail-under=80 \
+                        --junitxml=test-results.xml
+                '''
+            }
+            post {
+                always {
+                    junit 'test-results.xml'
+                    publishHTML(target: [
+                        reportDir: 'htmlcov',
+                        reportFiles: 'index.html',
+                        reportName: 'Coverage Report'
+                    ])
+                }
+            }
+        }
+
+        stage('Integration Tests') {
+            when {
+                branch 'develop'
+            }
+            steps {
+                echo 'Running integration tests...'
+                sh '''
+                    . ${VENV_DIR}/bin/activate
+                    pytest tests/integration/ --verbose || true
+                '''
+            }
+        }
+
+        stage('Build') {
+            steps {
+                echo 'Building package...'
+                sh '''
+                    . ${VENV_DIR}/bin/activate
+                    python -m build
+                '''
+                archiveArtifacts artifacts: 'dist/*', fingerprint: true
+            }
+        }
+
+        stage('Deploy to Dev') {
+            when {
+                branch 'develop'
+            }
+            steps {
+                echo 'Deploying to development environment...'
+                sh '''
+                    . ${VENV_DIR}/bin/activate
+                    python scripts/deploy.py --env dev
+                '''
+            }
+        }
+
+        stage('Deploy to Production') {
+            when {
+                branch 'main'
+            }
+            steps {
+                input message: 'Deploy to production?', ok: 'Deploy'
+                echo 'Deploying to production environment...'
+                sh '''
+                    . ${VENV_DIR}/bin/activate
+                    python scripts/deploy.py --env prod
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            echo 'Cleaning up...'
+            cleanWs()
+        }
+        success {
+            echo 'Pipeline succeeded!'
+            emailext (
+                subject: "SUCCESS: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+                body: "The pipeline succeeded. Check console output at ${env.BUILD_URL}",
+                to: 'etl-team@company.com'
+            )
+        }
+        failure {
+            echo 'Pipeline failed!'
+            emailext (
+                subject: "FAILURE: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+                body: "The pipeline failed. Check console output at ${env.BUILD_URL}",
+                to: 'etl-team@company.com'
+            )
+        }
+    }
+}
