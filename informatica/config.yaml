@@ -1,117 +1,104 @@
-# NiFi Configuration for DAILY_SALES_LOAD Workflow Migration
-# Customer Dimension Upsert Logic with SCD Type 2
+# NiFi Migration Configuration for wf_DIMENSION_LOAD
+# Full Staging Refresh with Multi-Key Upserts
 
 nifi:
   base_url: "http://localhost:8080/nifi-api"
-  process_group_name: "DAILY_SALES_LOAD"
+  username: "admin"
+  password: "admin_password"
+  root_pg_id: "root"
+  
+workflow:
+  name: "wf_DIMENSION_LOAD"
+  description: "Weekly Dimension Refresh - Full Staging Truncate/Reload with Multi-Key Upserts"
+  schedule: "0 0 1 ? * SUN"  # Every Sunday at 1:00 AM
   
 database:
   staging:
-    connection_name: "staging_db_pool"
-    url: "jdbc:postgresql://localhost:5432/staging_db"
+    connection_url: "jdbc:postgresql://localhost:5432/staging_db"
     driver: "org.postgresql.Driver"
-    username: "etl_user"
-    password: "${DB_PASSWORD}"
-    max_connections: 10
+    username: "staging_user"
+    password: "${DB_STAGING_PASSWORD}"
+    max_pool_size: 10
     
-  target:
-    connection_name: "target_dw_pool"
-    url: "jdbc:postgresql://localhost:5432/datawarehouse"
+  warehouse:
+    connection_url: "jdbc:postgresql://localhost:5432/warehouse_db"
     driver: "org.postgresql.Driver"
-    username: "dw_user"
-    password: "${DW_PASSWORD}"
-    max_connections: 10
+    username: "warehouse_user"
+    password: "${DB_WAREHOUSE_PASSWORD}"
+    max_pool_size: 20
 
-sources:
-  staging_customer_table: "STG_CUSTOMER"
+source:
+  file_path: "/data/source_files/"
+  customer_file: "customer_master.csv"
+  product_file: "product_master.csv"
+  file_format: "csv"
+  delimiter: ","
+  has_header: true
+  encoding: "UTF-8"
+
+staging:
+  customer_table: "STG_CUSTOMER"
+  product_table: "STG_PRODUCT"
+  truncate_before_load: true
+  batch_size: 10000
   
-targets:
-  customer_dimension_table: "DIM_CUSTOMER"
-  
+dimensions:
+  customer:
+    table: "DIM_CUSTOMER"
+    surrogate_key: "CUSTOMER_KEY"
+    natural_key: "CUSTOMER_ID"
+    scd_type: 2
+    effective_from_column: "EFFECTIVE_FROM_DATE"
+    effective_to_column: "EFFECTIVE_TO_DATE"
+    is_current_column: "IS_CURRENT"
+    update_strategy: "insert_update"
+    
+  product:
+    table: "DIM_PRODUCT"
+    surrogate_key: "PRODUCT_KEY"
+    natural_key: "PRODUCT_ID"
+    scd_type: 1
+    update_strategy: "upsert"
+
 sequences:
-  customer_key_sequence: "SEQ_CUSTOMER_KEY"
-  
-queries:
-  extract_staging_customer: |
-    SELECT
-        CUSTOMER_ID,
-        FIRST_NAME,
-        LAST_NAME,
-        EMAIL,
-        PHONE,
-        ADDRESS,
-        CITY,
-        STATE,
-        ZIP_CODE,
-        COUNTRY,
-        REGISTRATION_DATE,
-        CUSTOMER_TYPE,
-        SOURCE_SYSTEM,
-        LOAD_DATE
-    FROM STG_CUSTOMER
-    WHERE LOAD_DATE >= ?
+  customer_key:
+    name: "SEQ_CUSTOMER_KEY"
+    start_value: 1
+    cache_size: 1000
     
-  lookup_existing_customer: |
-    SELECT
-        CUSTOMER_KEY,
-        CUSTOMER_ID,
-        FIRST_NAME,
-        LAST_NAME,
-        EMAIL,
-        PHONE,
-        ADDRESS,
-        EFFECTIVE_FROM_DATE
-    FROM DIM_CUSTOMER
-    WHERE CUSTOMER_ID = ?
-    AND IS_CURRENT = 'Y'
-    
-  expire_old_record: |
-    UPDATE DIM_CUSTOMER
-    SET EFFECTIVE_TO_DATE = CURRENT_TIMESTAMP - INTERVAL '1 day',
-        IS_CURRENT = 'N',
-        UPDATED_DATE = CURRENT_TIMESTAMP
-    WHERE CUSTOMER_KEY = ?
-    
-  insert_new_record: |
-    INSERT INTO DIM_CUSTOMER (
-        CUSTOMER_KEY,
-        CUSTOMER_ID,
-        FIRST_NAME,
-        LAST_NAME,
-        FULL_NAME,
-        EMAIL,
-        PHONE,
-        ADDRESS,
-        CITY,
-        STATE,
-        ZIP_CODE,
-        COUNTRY,
-        REGISTRATION_DATE,
-        CUSTOMER_TYPE,
-        EFFECTIVE_FROM_DATE,
-        EFFECTIVE_TO_DATE,
-        IS_CURRENT,
-        CREATED_DATE,
-        SOURCE_SYSTEM
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    
-  get_next_customer_key: |
-    SELECT nextval('SEQ_CUSTOMER_KEY')
+  product_key:
+    name: "SEQ_PRODUCT_KEY"
+    start_value: 1
+    cache_size: 1000
 
 processing:
-  batch_size: 1000
-  error_threshold: 100
-  commit_interval: 10000
+  high_precision_numeric: true
+  numeric_scale: 10
+  numeric_precision: 2
+  parallel_threads: 4
+  error_tolerance: 0.01  # 1% error threshold
   
 error_handling:
-  error_table: "ETL_ERROR_LOG"
   max_retries: 3
   retry_delay_seconds: 60
+  failure_email: "etl-team@company.com"
+  dba_email: "dba-team@company.com"
+  error_log_table: "ETL_ERROR_LOG"
+
+monitoring:
+  log_level: "INFO"
+  metrics_enabled: true
+  statistics_update: true
+  index_rebuild: true
   
-logging:
-  level: "INFO"
-  error_email: "etl-team@company.com"
-  
-scheduling:
-  last_extract_date_attribute: "last_extract_date"
-  default_lookback_days: 1
+archival:
+  archive_path: "/data/archive/"
+  backup_before_load: true
+  retention_days: 90
+
+notifications:
+  success_email: "etl-team@company.com"
+  failure_email: "etl-team@company.com,dba-team@company.com"
+  smtp_host: "smtp.company.com"
+  smtp_port: 587
+  from_address: "nifi-etl@company.com"
