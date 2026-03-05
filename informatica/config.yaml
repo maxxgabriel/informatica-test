@@ -1,0 +1,122 @@
+# NiFi Sales Fact Referential Integrity Configuration
+# Purpose: Validate dimension keys and handle orphaned fact records
+
+nifi:
+  process_group_name: "Sales_Fact_Referential_Integrity"
+  parent_pg_id: "root"  # Set to actual parent PG ID in deployment
+
+database:
+  connection_service_name: "DatabaseConnectionPool"
+  
+  # Staging table
+  staging_table: "STG_SALES"
+  
+  # Dimension tables
+  customer_dim_table: "DIM_CUSTOMER"
+  product_dim_table: "DIM_PRODUCT"
+  
+  # Fact table
+  fact_table: "FACT_SALES"
+  
+  # Error/reject table
+  reject_table: "REJ_SALES_FACT"
+
+validation:
+  # Customer dimension lookup query
+  customer_lookup_query: |
+    SELECT CUSTOMER_KEY 
+    FROM DIM_CUSTOMER 
+    WHERE CUSTOMER_ID = ? 
+    AND IS_CURRENT = 'Y'
+    AND ? BETWEEN EFFECTIVE_FROM_DATE AND EFFECTIVE_TO_DATE
+  
+  # Product dimension lookup query
+  product_lookup_query: |
+    SELECT PRODUCT_KEY, COST_PRICE 
+    FROM DIM_PRODUCT 
+    WHERE PRODUCT_ID = ?
+  
+  # Date dimension lookup query (if applicable)
+  date_lookup_query: |
+    SELECT DATE_KEY 
+    FROM DIM_DATE 
+    WHERE DATE_VALUE = TRUNC(?)
+  
+  # Batch size for validation
+  batch_size: 1000
+  
+  # Enable parallel validation
+  parallel_threads: 4
+
+error_handling:
+  # Reject records with missing keys
+  reject_orphaned_records: true
+  
+  # Log level (DEBUG, INFO, WARN, ERROR)
+  log_level: "INFO"
+  
+  # Error notification email
+  notification_email: "etl-team@company.com"
+  
+  # Maximum error threshold (percentage)
+  max_error_threshold_percent: 5.0
+  
+  # Stop on threshold breach
+  stop_on_threshold_breach: true
+
+logging:
+  # Detailed error log attributes
+  log_attributes:
+    - "transaction_id"
+    - "customer_id"
+    - "product_id"
+    - "transaction_date"
+    - "error_type"
+    - "error_message"
+    - "validation_timestamp"
+  
+  # Error categories
+  error_categories:
+    missing_customer: "MISSING_CUSTOMER_KEY"
+    missing_product: "MISSING_PRODUCT_KEY"
+    missing_date: "MISSING_DATE_KEY"
+    invalid_data: "INVALID_DATA"
+    multiple_matches: "MULTIPLE_MATCHES"
+
+metrics:
+  # Track validation metrics
+  enable_metrics: true
+  metrics_attributes:
+    - "total_records"
+    - "valid_records"
+    - "invalid_records"
+    - "customer_key_errors"
+    - "product_key_errors"
+    - "date_key_errors"
+    - "validation_duration_ms"
+
+performance:
+  # Connection pool settings
+  max_connections: 10
+  connection_timeout_seconds: 30
+  
+  # Query timeout
+  query_timeout_seconds: 60
+  
+  # Cache settings for lookups
+  enable_lookup_cache: true
+  cache_size: 10000
+  cache_ttl_minutes: 60
+
+output:
+  # Valid records flow file
+  valid_records_relationship: "valid"
+  
+  # Invalid records flow file
+  invalid_records_relationship: "invalid"
+  
+  # Route to fact table loader
+  fact_loader_port_name: "validated_sales"
+  
+  # Route to reject handler
+  reject_handler_port_name: "rejected_sales"
