@@ -1,271 +1,166 @@
 """
-Extract module for m_LOAD_STG_PRODUCT
-Reads product CSV file and extracts data for staging
+Extract module for m_LOAD_STG_SALES
+Handles CSV file extraction with pattern matching and schema validation
 """
-import csv
+
+import os
+import glob
 import logging
-from typing import Generator, Dict, Any
-from pathlib import Path
+from typing import List, Dict, Any, Generator
+import pandas as pd
 from datetime import datetime
-import nipyapi
+import yaml
 
 logger = logging.getLogger(__name__)
 
 
-class ProductExtractor:
-    """Extract product data from CSV files"""
+class SalesDataExtractor:
+    """Extract sales transaction data from CSV files"""
     
-    def __init__(self, config: Dict[str, Any]):
-        """
-        Initialize extractor with configuration
+    def __init__(self, config_path: str = "config.yaml"):
+        """Initialize extractor with configuration"""
+        with open(config_path, 'r') as f:
+            self.config = yaml.safe_load(f)
         
-        Args:
-            config: Configuration dictionary with source file settings
-        """
-        self.config = config
-        self.source_file_path = Path(config['source']['file_path'])
-        self.file_name = config['source']['file_name']
-        self.delimiter = config['source'].get('delimiter', ',')
-        self.encoding = config['source'].get('encoding', 'utf-8')
-        self.skip_header = config['source'].get('skip_header', True)
+        self.source_config = self.config['source']
+        self.validation_config = self.config['validation']
         
-    def extract(self) -> Generator[Dict[str, Any], None, None]:
-        """
-        Extract product records from CSV file
+    def get_source_files(self) -> List[str]:
+        """Get list of source files matching the pattern"""
+        file_path = self.source_config['file_path']
         
-        Yields:
-            Dict containing product record data
+        # Handle glob pattern
+        if '*' in file_path:
+            files = glob.glob(file_path)
+            logger.info(f"Found {len(files)} files matching pattern: {file_path}")
+            return sorted(files)
+        else:
+            if os.path.exists(file_path):
+                logger.info(f"Found single file: {file_path}")
+                return [file_path]
+            else:
+                raise FileNotFoundError(f"Source file not found: {file_path}")
+    
+    def validate_schema(self, df: pd.DataFrame) -> bool:
+        """Validate DataFrame schema against configuration"""
+        expected_fields = [field['name'] for field in self.source_config['fields']]
+        actual_fields = df.columns.tolist()
+        
+        missing_fields = set(expected_fields) - set(actual_fields)
+        if missing_fields:
+            raise ValueError(f"Missing required fields: {missing_fields}")
+        
+        extra_fields = set(actual_fields) - set(expected_fields)
+        if extra_fields and self.validation_config['enforce_schema']:
+            logger.warning(f"Extra fields found (will be ignored): {extra_fields}")
+        
+        return True
+    
+    def parse_datatypes(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Parse and convert datatypes based on configuration"""
+        for field in self.source_config['fields']:
+            field_name = field['name']
+            field_type = field['type']
             
-        Raises:
-            FileNotFoundError: If source file doesn't exist
-            ValueError: If file format is invalid
-        """
-        file_path = self.source_file_path / self.file_name
-        
-        if not file_path.exists():
-            error_msg = f"Source file not found: {file_path}"
-            logger.error(error_msg)
-            raise FileNotFoundError(error_msg)
+            if field_name not in df.columns:
+                continue
             
-        logger.info(f"Starting extraction from {file_path}")
-        record_count = 0
+            try:
+                if field_type == 'integer':
+                    df[field_name] = pd.to_numeric(df[field_name], errors='coerce').astype('Int64')
+                
+                elif field_type == 'decimal':
+                    df[field_name] = pd.to_numeric(df[field_name], errors='coerce').round(field.get('scale', 2))
+                
+                elif field_type == 'datetime':
+                    date_format = field.get('format', '%Y-%m-%d %H:%M:%S')
+                    df[field_name] = pd.to_datetime(df[field_name], format=date_format, errors='coerce')
+                
+                elif field_type == 'string':
+                    df[field_name] = df[field_name].astype(str).str.strip()
+                    max_length = field.get('length')
+                    if max_length:
+                        df[field_name] = df[field_name].str[:max_length]
+            
+            except Exception as e:
+                logger.error(f"Error parsing field {field_name}: {str(e)}")
+                raise
+        
+        return df
+    
+    def extract_from_file(self, file_path: str) -> pd.DataFrame:
+        """Extract data from a single CSV file"""
+        logger.info(f"Extracting data from: {file_path}")
         
         try:
-            with open(file_path, 'r', encoding=self.encoding) as csvfile:
-                reader = csv.DictReader(csvfile, delimiter=self.delimiter)
-                
-                if self.skip_header:
-                    next(reader, None)
-                
-                for row in reader:
-                    try:
-                        record = self._validate_and_extract_record(row)
-                        if record:
-                            record_count += 1
-                            yield record
-                    except Exception as e:
-                        logger.warning(f"Skipping invalid record at line {record_count + 1}: {e}")
-                        continue
-                        
+            df = pd.read_csv(
+                file_path,
+                delimiter=self.source_config['delimiter'],
+                encoding=self.source_config['encoding'],
+                header=0 if self.source_config['has_header'] else None
+            )
+            
+            logger.info(f"Extracted {len(df)} rows from {file_path}")
+            
+            # Validate schema
+            self.validate_schema(df)
+            
+            # Parse datatypes
+            df = self.parse_datatypes(df)
+            
+            # Add source file metadata
+            df['_source_file'] = os.path.basename(file_path)
+            df['_extract_timestamp'] = datetime.now()
+            
+            return df
+        
         except Exception as e:
-            logger.error(f"Error reading CSV file: {e}")
+            logger.error(f"Error extracting from {file_path}: {str(e)}")
             raise
-            
-        logger.info(f"Extraction complete. Total records extracted: {record_count}")
     
-    def _validate_and_extract_record(self, row: Dict[str, str]) -> Dict[str, Any]:
-        """
-        Validate and transform CSV row to record dictionary
+    def extract_all(self) -> Generator[pd.DataFrame, None, None]:
+        """Extract data from all source files"""
+        files = self.get_source_files()
         
-        Args:
-            row: CSV row as dictionary
-            
-        Returns:
-            Validated record dictionary
-            
-        Raises:
-            ValueError: If required fields are missing or invalid
-        """
-        required_fields = [
-            'PRODUCT_ID', 'PRODUCT_NAME', 'CATEGORY', 'UNIT_PRICE', 'STATUS'
-        ]
+        if not files:
+            logger.warning("No source files found")
+            return
         
-        # Check required fields
-        for field in required_fields:
-            if not row.get(field) or row[field].strip() == '':
-                raise ValueError(f"Missing required field: {field}")
-        
-        # Build record with type conversion
-        record = {
-            'PRODUCT_ID': row['PRODUCT_ID'].strip(),
-            'PRODUCT_NAME': row['PRODUCT_NAME'].strip(),
-            'PRODUCT_DESCRIPTION': row.get('PRODUCT_DESCRIPTION', '').strip(),
-            'CATEGORY': row['CATEGORY'].strip(),
-            'SUB_CATEGORY': row.get('SUB_CATEGORY', '').strip(),
-            'BRAND': row.get('BRAND', '').strip(),
-            'UNIT_PRICE': self._parse_decimal(row['UNIT_PRICE']),
-            'COST_PRICE': self._parse_decimal(row.get('COST_PRICE', '0')),
-            'SUPPLIER_ID': row.get('SUPPLIER_ID', '').strip(),
-            'SUPPLIER_NAME': row.get('SUPPLIER_NAME', '').strip(),
-            'WEIGHT': self._parse_decimal(row.get('WEIGHT', '0')),
-            'DIMENSIONS': row.get('DIMENSIONS', '').strip(),
-            'COLOR': row.get('COLOR', '').strip(),
-            'SIZE': row.get('SIZE', '').strip(),
-            'MATERIAL': row.get('MATERIAL', '').strip(),
-            'STATUS': row['STATUS'].strip()
-        }
-        
-        # Validate business rules
-        if record['UNIT_PRICE'] < 0:
-            raise ValueError(f"Invalid UNIT_PRICE: {record['UNIT_PRICE']}")
-            
-        if record['COST_PRICE'] < 0:
-            raise ValueError(f"Invalid COST_PRICE: {record['COST_PRICE']}")
-        
-        return record
+        for file_path in files:
+            try:
+                df = self.extract_from_file(file_path)
+                yield df
+            except Exception as e:
+                logger.error(f"Failed to extract from {file_path}: {str(e)}")
+                if self.config['error_handling']['max_retry_attempts'] == 0:
+                    raise
+                continue
     
-    @staticmethod
-    def _parse_decimal(value: str) -> float:
-        """
-        Parse string to decimal
+    def extract_batch(self, batch_size: int = None) -> pd.DataFrame:
+        """Extract all data and return as single DataFrame"""
+        if batch_size is None:
+            batch_size = self.config['performance']['batch_size']
         
-        Args:
-            value: String value to parse
-            
-        Returns:
-            Parsed float value
-        """
-        try:
-            return float(value.strip()) if value.strip() else 0.0
-        except ValueError:
-            raise ValueError(f"Cannot parse decimal value: {value}")
+        all_data = []
+        for df in self.extract_all():
+            all_data.append(df)
+        
+        if not all_data:
+            return pd.DataFrame()
+        
+        combined_df = pd.concat(all_data, ignore_index=True)
+        logger.info(f"Total extracted rows: {len(combined_df)}")
+        
+        return combined_df
 
 
-class NiFiProductExtractor:
-    """NiFi-based extractor using GetFile and related processors"""
-    
-    def __init__(self, config: Dict[str, Any], canvas: Any):
-        """
-        Initialize NiFi extractor
-        
-        Args:
-            config: Configuration dictionary
-            canvas: NiFi canvas object (process group)
-        """
-        self.config = config
-        self.canvas = canvas
-        self.processor_config = config['nifi']['processors']['extract']
-        
-    def create_extract_flow(self) -> Dict[str, Any]:
-        """
-        Create NiFi flow for product extraction
-        
-        Returns:
-            Dictionary with created processor IDs
-        """
-        logger.info("Creating NiFi extract flow")
-        
-        # Create GetFile processor
-        get_file = nipyapi.canvas.create_processor(
-            parent_pg=self.canvas,
-            processor=nipyapi.canvas.get_processor_type('org.apache.nifi.processors.standard.GetFile'),
-            location=(100, 100),
-            name='GetProductFile',
-            config=nipyapi.nifi.ProcessorConfigDTO(
-                properties={
-                    'Input Directory': self.config['source']['file_path'],
-                    'File Filter': self.config['source']['file_name'],
-                    'Keep Source File': 'false',
-                    'Polling Interval': '10 sec',
-                    'Batch Size': '10'
-                },
-                auto_terminated_relationships=['not.found']
-            )
-        )
-        
-        # Create RouteOnAttribute for error handling
-        route_on_attr = nipyapi.canvas.create_processor(
-            parent_pg=self.canvas,
-            processor=nipyapi.canvas.get_processor_type('org.apache.nifi.processors.standard.RouteOnAttribute'),
-            location=(300, 100),
-            name='RouteValidFiles',
-            config=nipyapi.nifi.ProcessorConfigDTO(
-                properties={
-                    'Routing Strategy': 'Route to Property name',
-                    'valid': "${filename:matches('.*\\.csv')}"
-                },
-                auto_terminated_relationships=['unmatched']
-            )
-        )
-        
-        # Create SplitText for CSV processing
-        split_text = nipyapi.canvas.create_processor(
-            parent_pg=self.canvas,
-            processor=nipyapi.canvas.get_processor_type('org.apache.nifi.processors.standard.SplitText'),
-            location=(500, 100),
-            name='SplitCSVRecords',
-            config=nipyapi.nifi.ProcessorConfigDTO(
-                properties={
-                    'Line Split Count': '1',
-                    'Header Line Count': '1',
-                    'Remove Trailing Newlines': 'true'
-                },
-                auto_terminated_relationships=['failure']
-            )
-        )
-        
-        # Create ExtractText for CSV parsing
-        extract_text = nipyapi.canvas.create_processor(
-            parent_pg=self.canvas,
-            processor=nipyapi.canvas.get_processor_type('org.apache.nifi.processors.standard.ExtractText'),
-            location=(700, 100),
-            name='ParseCSVFields',
-            config=nipyapi.nifi.ProcessorConfigDTO(
-                properties={
-                    'Character Set': 'UTF-8',
-                    'Maximum Buffer Size': '1 MB',
-                    'Enable Canonical Equivalence': 'false',
-                    'Enable Case-insensitive Matching': 'true',
-                    # CSV field extraction patterns
-                    'product.id': '^([^,]+),.*',
-                    'product.name': '^[^,]+,([^,]+),.*',
-                    'product.category': '^[^,]+,[^,]+,[^,]+,([^,]+),.*'
-                },
-                auto_terminated_relationships=['unmatched']
-            )
-        )
-        
-        # Connect processors
-        nipyapi.canvas.create_connection(get_file, route_on_attr, ['success'])
-        nipyapi.canvas.create_connection(route_on_attr, split_text, ['valid'])
-        nipyapi.canvas.create_connection(split_text, extract_text, ['splits'])
-        
-        logger.info("Extract flow created successfully")
-        
-        return {
-            'get_file': get_file.id,
-            'route_on_attr': route_on_attr.id,
-            'split_text': split_text.id,
-            'extract_text': extract_text.id
-        }
-
-
-def main():
-    """Main extraction function for testing"""
-    import yaml
-    
+if __name__ == "__main__":
+    # Test extraction
     logging.basicConfig(level=logging.INFO)
     
-    # Load config
-    with open('config.yaml', 'r') as f:
-        config = yaml.safe_load(f)
+    extractor = SalesDataExtractor()
+    df = extractor.extract_batch()
     
-    # Run extraction
-    extractor = ProductExtractor(config)
-    
-    for record in extractor.extract():
-        print(record)
-
-
-if __name__ == '__main__':
-    main()
+    print(f"\nExtracted {len(df)} total rows")
+    print(f"\nSample data:\n{df.head()}")
+    print(f"\nData types:\n{df.dtypes}")
