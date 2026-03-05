@@ -1,256 +1,271 @@
 """
-CSV File Extraction Module for Customer Staging Load
-Reads customer CSV files and extracts data for staging
+Extract module for m_LOAD_STG_PRODUCT
+Reads product CSV file and extracts data for staging
 """
-
 import csv
 import logging
+from typing import Generator, Dict, Any
 from pathlib import Path
-from typing import Iterator, Dict, Any, Optional
 from datetime import datetime
 import nipyapi
-from nipyapi.nifi import ProcessorConfigDTO
 
 logger = logging.getLogger(__name__)
 
 
-class CustomerCSVExtractor:
-    """Extracts customer data from CSV files"""
+class ProductExtractor:
+    """Extract product data from CSV files"""
     
     def __init__(self, config: Dict[str, Any]):
         """
-        Initialize CSV extractor
+        Initialize extractor with configuration
         
         Args:
-            config: Configuration dictionary containing file paths and settings
+            config: Configuration dictionary with source file settings
         """
-        self.source_path = Path(config['source']['file_path'])
-        self.file_pattern = config['source']['file_pattern']
+        self.config = config
+        self.source_file_path = Path(config['source']['file_path'])
+        self.file_name = config['source']['file_name']
         self.delimiter = config['source'].get('delimiter', ',')
         self.encoding = config['source'].get('encoding', 'utf-8')
         self.skip_header = config['source'].get('skip_header', True)
         
-    def extract_records(self) -> Iterator[Dict[str, Any]]:
+    def extract(self) -> Generator[Dict[str, Any], None, None]:
         """
-        Extract records from CSV file
+        Extract product records from CSV file
         
         Yields:
-            Dictionary containing customer record data
+            Dict containing product record data
             
         Raises:
             FileNotFoundError: If source file doesn't exist
-            ValueError: If file is empty or invalid format
+            ValueError: If file format is invalid
         """
-        file_path = self._get_source_file()
+        file_path = self.source_file_path / self.file_name
         
         if not file_path.exists():
-            raise FileNotFoundError(f"Source file not found: {file_path}")
+            error_msg = f"Source file not found: {file_path}"
+            logger.error(error_msg)
+            raise FileNotFoundError(error_msg)
             
-        logger.info(f"Extracting records from: {file_path}")
+        logger.info(f"Starting extraction from {file_path}")
         record_count = 0
         
         try:
             with open(file_path, 'r', encoding=self.encoding) as csvfile:
                 reader = csv.DictReader(csvfile, delimiter=self.delimiter)
                 
+                if self.skip_header:
+                    next(reader, None)
+                
                 for row in reader:
-                    record_count += 1
-                    
-                    # Basic validation
-                    if not row.get('CUSTOMER_ID'):
-                        logger.warning(f"Skipping row {record_count}: Missing CUSTOMER_ID")
+                    try:
+                        record = self._validate_and_extract_record(row)
+                        if record:
+                            record_count += 1
+                            yield record
+                    except Exception as e:
+                        logger.warning(f"Skipping invalid record at line {record_count + 1}: {e}")
                         continue
                         
-                    yield self._prepare_record(row)
-                    
-            logger.info(f"Successfully extracted {record_count} records")
-            
-        except csv.Error as e:
-            logger.error(f"CSV parsing error at line {record_count}: {e}")
-            raise ValueError(f"Invalid CSV format: {e}")
         except Exception as e:
-            logger.error(f"Extraction error: {e}")
+            logger.error(f"Error reading CSV file: {e}")
             raise
             
-    def _get_source_file(self) -> Path:
+        logger.info(f"Extraction complete. Total records extracted: {record_count}")
+    
+    def _validate_and_extract_record(self, row: Dict[str, str]) -> Dict[str, Any]:
         """
-        Get the source file path based on pattern
-        
-        Returns:
-            Path to source file
-        """
-        if self.file_pattern:
-            # Find files matching pattern
-            matching_files = list(self.source_path.parent.glob(self.file_pattern))
-            if not matching_files:
-                raise FileNotFoundError(f"No files matching pattern: {self.file_pattern}")
-            # Return most recent file
-            return max(matching_files, key=lambda p: p.stat().st_mtime)
-        return self.source_path
-        
-    def _prepare_record(self, row: Dict[str, str]) -> Dict[str, Any]:
-        """
-        Prepare and validate record from CSV row
+        Validate and transform CSV row to record dictionary
         
         Args:
-            row: Raw CSV row dictionary
+            row: CSV row as dictionary
             
         Returns:
-            Prepared record dictionary
+            Validated record dictionary
+            
+        Raises:
+            ValueError: If required fields are missing or invalid
         """
-        return {
-            'CUSTOMER_ID': row.get('CUSTOMER_ID', '').strip(),
-            'FIRST_NAME': row.get('FIRST_NAME', '').strip(),
-            'LAST_NAME': row.get('LAST_NAME', '').strip(),
-            'EMAIL': row.get('EMAIL', '').strip(),
-            'PHONE': row.get('PHONE', '').strip(),
-            'ADDRESS': row.get('ADDRESS', '').strip(),
-            'CITY': row.get('CITY', '').strip(),
-            'STATE': row.get('STATE', '').strip(),
-            'ZIP_CODE': row.get('ZIP_CODE', '').strip(),
-            'COUNTRY': row.get('COUNTRY', '').strip(),
-            'REGISTRATION_DATE': row.get('REGISTRATION_DATE', '').strip(),
-            'CUSTOMER_TYPE': row.get('CUSTOMER_TYPE', '').strip()
+        required_fields = [
+            'PRODUCT_ID', 'PRODUCT_NAME', 'CATEGORY', 'UNIT_PRICE', 'STATUS'
+        ]
+        
+        # Check required fields
+        for field in required_fields:
+            if not row.get(field) or row[field].strip() == '':
+                raise ValueError(f"Missing required field: {field}")
+        
+        # Build record with type conversion
+        record = {
+            'PRODUCT_ID': row['PRODUCT_ID'].strip(),
+            'PRODUCT_NAME': row['PRODUCT_NAME'].strip(),
+            'PRODUCT_DESCRIPTION': row.get('PRODUCT_DESCRIPTION', '').strip(),
+            'CATEGORY': row['CATEGORY'].strip(),
+            'SUB_CATEGORY': row.get('SUB_CATEGORY', '').strip(),
+            'BRAND': row.get('BRAND', '').strip(),
+            'UNIT_PRICE': self._parse_decimal(row['UNIT_PRICE']),
+            'COST_PRICE': self._parse_decimal(row.get('COST_PRICE', '0')),
+            'SUPPLIER_ID': row.get('SUPPLIER_ID', '').strip(),
+            'SUPPLIER_NAME': row.get('SUPPLIER_NAME', '').strip(),
+            'WEIGHT': self._parse_decimal(row.get('WEIGHT', '0')),
+            'DIMENSIONS': row.get('DIMENSIONS', '').strip(),
+            'COLOR': row.get('COLOR', '').strip(),
+            'SIZE': row.get('SIZE', '').strip(),
+            'MATERIAL': row.get('MATERIAL', '').strip(),
+            'STATUS': row['STATUS'].strip()
         }
-
-
-class NiFiCSVExtractor:
-    """NiFi implementation of CSV extraction using processors"""
+        
+        # Validate business rules
+        if record['UNIT_PRICE'] < 0:
+            raise ValueError(f"Invalid UNIT_PRICE: {record['UNIT_PRICE']}")
+            
+        if record['COST_PRICE'] < 0:
+            raise ValueError(f"Invalid COST_PRICE: {record['COST_PRICE']}")
+        
+        return record
     
-    def __init__(self, canvas, config: Dict[str, Any]):
+    @staticmethod
+    def _parse_decimal(value: str) -> float:
         """
-        Initialize NiFi CSV extractor
+        Parse string to decimal
         
         Args:
-            canvas: NiFi process group canvas
-            config: Configuration dictionary
+            value: String value to parse
+            
+        Returns:
+            Parsed float value
         """
-        self.canvas = canvas
-        self.config = config
+        try:
+            return float(value.strip()) if value.strip() else 0.0
+        except ValueError:
+            raise ValueError(f"Cannot parse decimal value: {value}")
+
+
+class NiFiProductExtractor:
+    """NiFi-based extractor using GetFile and related processors"""
+    
+    def __init__(self, config: Dict[str, Any], canvas: Any):
+        """
+        Initialize NiFi extractor
         
-    def create_extraction_flow(self) -> Dict[str, Any]:
+        Args:
+            config: Configuration dictionary
+            canvas: NiFi canvas object (process group)
         """
-        Create NiFi processors for CSV extraction
+        self.config = config
+        self.canvas = canvas
+        self.processor_config = config['nifi']['processors']['extract']
+        
+    def create_extract_flow(self) -> Dict[str, Any]:
+        """
+        Create NiFi flow for product extraction
         
         Returns:
-            Dictionary containing created processor IDs
+            Dictionary with created processor IDs
         """
-        logger.info("Creating CSV extraction flow in NiFi")
+        logger.info("Creating NiFi extract flow")
         
-        # ListFile processor to monitor directory
-        list_file = self._create_list_file_processor()
-        
-        # FetchFile processor to read file content
-        fetch_file = self._create_fetch_file_processor()
-        
-        # SplitRecord processor to split CSV into records
-        split_record = self._create_split_record_processor()
-        
-        # Connect processors
-        self._connect_processors(list_file, fetch_file)
-        self._connect_processors(fetch_file, split_record)
-        
-        return {
-            'list_file': list_file.id,
-            'fetch_file': fetch_file.id,
-            'split_record': split_record.id
-        }
-        
-    def _create_list_file_processor(self):
-        """Create ListFile processor for monitoring source directory"""
-        processor = nipyapi.canvas.create_processor(
+        # Create GetFile processor
+        get_file = nipyapi.canvas.create_processor(
             parent_pg=self.canvas,
-            processor=nipyapi.canvas.get_processor_type('org.apache.nifi.processors.standard.ListFile'),
+            processor=nipyapi.canvas.get_processor_type('org.apache.nifi.processors.standard.GetFile'),
             location=(100, 100),
-            name='List Customer CSV Files',
-            config=ProcessorConfigDTO(
+            name='GetProductFile',
+            config=nipyapi.nifi.ProcessorConfigDTO(
                 properties={
                     'Input Directory': self.config['source']['file_path'],
-                    'File Filter': self.config['source'].get('file_pattern', 'customer_master.csv'),
-                    'Recurse Subdirectories': 'false',
-                    'Minimum File Age': '0 sec',
-                    'Maximum File Age': '30 days',
-                    'Minimum File Size': '0 B'
+                    'File Filter': self.config['source']['file_name'],
+                    'Keep Source File': 'false',
+                    'Polling Interval': '10 sec',
+                    'Batch Size': '10'
                 },
-                scheduling_period='60 sec',
-                auto_terminated_relationships=['success']
+                auto_terminated_relationships=['not.found']
             )
         )
-        logger.info(f"Created ListFile processor: {processor.id}")
-        return processor
         
-    def _create_fetch_file_processor(self):
-        """Create FetchFile processor to read file content"""
-        processor = nipyapi.canvas.create_processor(
+        # Create RouteOnAttribute for error handling
+        route_on_attr = nipyapi.canvas.create_processor(
             parent_pg=self.canvas,
-            processor=nipyapi.canvas.get_processor_type('org.apache.nifi.processors.standard.FetchFile'),
-            location=(100, 250),
-            name='Fetch Customer CSV',
-            config=ProcessorConfigDTO(
+            processor=nipyapi.canvas.get_processor_type('org.apache.nifi.processors.standard.RouteOnAttribute'),
+            location=(300, 100),
+            name='RouteValidFiles',
+            config=nipyapi.nifi.ProcessorConfigDTO(
                 properties={
-                    'File to Fetch': '${absolute.path}/${filename}',
-                    'Completion Strategy': 'None',
-                    'Move Conflict Strategy': 'Rename',
-                    'Log level when file not found': 'ERROR'
+                    'Routing Strategy': 'Route to Property name',
+                    'valid': "${filename:matches('.*\\.csv')}"
                 },
-                auto_terminated_relationships=['not.found', 'permission.denied']
+                auto_terminated_relationships=['unmatched']
             )
         )
-        logger.info(f"Created FetchFile processor: {processor.id}")
-        return processor
         
-    def _create_split_record_processor(self):
-        """Create SplitRecord processor to parse CSV"""
-        processor = nipyapi.canvas.create_processor(
+        # Create SplitText for CSV processing
+        split_text = nipyapi.canvas.create_processor(
             parent_pg=self.canvas,
-            processor=nipyapi.canvas.get_processor_type('org.apache.nifi.processors.standard.SplitRecord'),
-            location=(100, 400),
-            name='Split CSV Records',
-            config=ProcessorConfigDTO(
+            processor=nipyapi.canvas.get_processor_type('org.apache.nifi.processors.standard.SplitText'),
+            location=(500, 100),
+            name='SplitCSVRecords',
+            config=nipyapi.nifi.ProcessorConfigDTO(
                 properties={
-                    'Record Reader': 'CSVReader',
-                    'Record Writer': 'JsonRecordSetWriter',
-                    'Records Per Split': '1',
-                    'record-reader': self._create_csv_reader_service(),
-                    'record-writer': self._create_json_writer_service()
+                    'Line Split Count': '1',
+                    'Header Line Count': '1',
+                    'Remove Trailing Newlines': 'true'
                 },
-                auto_terminated_relationships=['failure', 'original']
+                auto_terminated_relationships=['failure']
             )
         )
-        logger.info(f"Created SplitRecord processor: {processor.id}")
-        return processor
         
-    def _create_csv_reader_service(self) -> str:
-        """Create CSV reader controller service"""
-        # This would create a CSV reader service in NiFi
-        # Simplified for example
-        return 'csv-reader-service-id'
-        
-    def _create_json_writer_service(self) -> str:
-        """Create JSON writer controller service"""
-        # This would create a JSON writer service in NiFi
-        # Simplified for example
-        return 'json-writer-service-id'
-        
-    def _connect_processors(self, source, destination):
-        """Connect two processors"""
-        nipyapi.canvas.create_connection(
-            source=source,
-            target=destination,
-            relationships=['success']
+        # Create ExtractText for CSV parsing
+        extract_text = nipyapi.canvas.create_processor(
+            parent_pg=self.canvas,
+            processor=nipyapi.canvas.get_processor_type('org.apache.nifi.processors.standard.ExtractText'),
+            location=(700, 100),
+            name='ParseCSVFields',
+            config=nipyapi.nifi.ProcessorConfigDTO(
+                properties={
+                    'Character Set': 'UTF-8',
+                    'Maximum Buffer Size': '1 MB',
+                    'Enable Canonical Equivalence': 'false',
+                    'Enable Case-insensitive Matching': 'true',
+                    # CSV field extraction patterns
+                    'product.id': '^([^,]+),.*',
+                    'product.name': '^[^,]+,([^,]+),.*',
+                    'product.category': '^[^,]+,[^,]+,[^,]+,([^,]+),.*'
+                },
+                auto_terminated_relationships=['unmatched']
+            )
         )
-        logger.info(f"Connected {source.component.name} to {destination.component.name}")
+        
+        # Connect processors
+        nipyapi.canvas.create_connection(get_file, route_on_attr, ['success'])
+        nipyapi.canvas.create_connection(route_on_attr, split_text, ['valid'])
+        nipyapi.canvas.create_connection(split_text, extract_text, ['splits'])
+        
+        logger.info("Extract flow created successfully")
+        
+        return {
+            'get_file': get_file.id,
+            'route_on_attr': route_on_attr.id,
+            'split_text': split_text.id,
+            'extract_text': extract_text.id
+        }
 
 
-def extract_customer_data(config: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
-    """
-    Main extraction function for customer data
+def main():
+    """Main extraction function for testing"""
+    import yaml
     
-    Args:
-        config: Configuration dictionary
-        
-    Yields:
-        Customer records
-    """
-    extractor = CustomerCSVExtractor(config)
-    return extractor.extract_records()
+    logging.basicConfig(level=logging.INFO)
+    
+    # Load config
+    with open('config.yaml', 'r') as f:
+        config = yaml.safe_load(f)
+    
+    # Run extraction
+    extractor = ProductExtractor(config)
+    
+    for record in extractor.extract():
+        print(record)
+
+
+if __name__ == '__main__':
+    main()
