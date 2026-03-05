@@ -1,104 +1,94 @@
-# NiFi Migration Configuration for wf_DIMENSION_LOAD
-# Full Staging Refresh with Multi-Key Upserts
+# NiFi Full Refresh Workflow Configuration
+# Migration from Informatica wf_FULL_REFRESH
+# Truncate-all pattern with bulk load using 100K commit intervals
+
+workflow:
+  name: "wf_FULL_REFRESH"
+  description: "Monthly full refresh with truncate-all pattern and bulk load optimization"
+  schedule: "0 0 1 * *"  # First day of month at midnight
 
 nifi:
   base_url: "http://localhost:8080/nifi-api"
-  username: "admin"
-  password: "admin_password"
-  root_pg_id: "root"
-  
-workflow:
-  name: "wf_DIMENSION_LOAD"
-  description: "Weekly Dimension Refresh - Full Staging Truncate/Reload with Multi-Key Upserts"
-  schedule: "0 0 1 ? * SUN"  # Every Sunday at 1:00 AM
-  
+  root_process_group: "root"
+  process_group_name: "FULL_REFRESH_WORKFLOW"
+
 database:
   staging:
-    connection_url: "jdbc:postgresql://localhost:5432/staging_db"
-    driver: "org.postgresql.Driver"
-    username: "staging_user"
-    password: "${DB_STAGING_PASSWORD}"
-    max_pool_size: 10
-    
+    connection_pool: "staging-db-pool"
+    schema: "STG"
+    tables:
+      - "STG_CUSTOMER"
+      - "STG_PRODUCT"
+      - "STG_SALES"
+  
   warehouse:
-    connection_url: "jdbc:postgresql://localhost:5432/warehouse_db"
-    driver: "org.postgresql.Driver"
-    username: "warehouse_user"
-    password: "${DB_WAREHOUSE_PASSWORD}"
-    max_pool_size: 20
+    connection_pool: "warehouse-db-pool"
+    schema: "DWH"
+    dimension_tables:
+      - "DIM_CUSTOMER"
+      - "DIM_PRODUCT"
+    fact_tables:
+      - "FACT_SALES"
 
-source:
-  file_path: "/data/source_files/"
-  customer_file: "customer_master.csv"
-  product_file: "product_master.csv"
-  file_format: "csv"
-  delimiter: ","
-  has_header: true
-  encoding: "UTF-8"
-
-staging:
-  customer_table: "STG_CUSTOMER"
-  product_table: "STG_PRODUCT"
-  truncate_before_load: true
-  batch_size: 10000
+sources:
+  file_path: "/data/source/"
+  archive_path: "/data/archive/"
+  patterns:
+    customer: "customer_master.csv"
+    product: "product_master.csv"
+    sales: "sales_transactions_*.csv"
   
-dimensions:
-  customer:
-    table: "DIM_CUSTOMER"
-    surrogate_key: "CUSTOMER_KEY"
-    natural_key: "CUSTOMER_ID"
-    scd_type: 2
-    effective_from_column: "EFFECTIVE_FROM_DATE"
-    effective_to_column: "EFFECTIVE_TO_DATE"
-    is_current_column: "IS_CURRENT"
-    update_strategy: "insert_update"
-    
-  product:
-    table: "DIM_PRODUCT"
-    surrogate_key: "PRODUCT_KEY"
-    natural_key: "PRODUCT_ID"
-    scd_type: 1
-    update_strategy: "upsert"
+  file_format:
+    type: "CSV"
+    delimiter: ","
+    header: true
+    charset: "UTF-8"
 
-sequences:
-  customer_key:
-    name: "SEQ_CUSTOMER_KEY"
-    start_value: 1
-    cache_size: 1000
-    
-  product_key:
-    name: "SEQ_PRODUCT_KEY"
-    start_value: 1
-    cache_size: 1000
-
-processing:
-  high_precision_numeric: true
-  numeric_scale: 10
-  numeric_precision: 2
-  parallel_threads: 4
-  error_tolerance: 0.01  # 1% error threshold
+performance:
+  bulk_load:
+    enabled: true
+    commit_interval: 100000
+    batch_size: 10000
   
+  partitioning:
+    enabled: true
+    partition_count: 4
+    partition_type: "HASH"
+  
+  connection_pools:
+    max_connections: 10
+    min_connections: 2
+
 error_handling:
   max_retries: 3
   retry_delay_seconds: 60
-  failure_email: "etl-team@company.com"
-  dba_email: "dba-team@company.com"
-  error_log_table: "ETL_ERROR_LOG"
-
-monitoring:
-  log_level: "INFO"
-  metrics_enabled: true
-  statistics_update: true
-  index_rebuild: true
+  failure_strategy: "ROLLBACK"
   
-archival:
-  archive_path: "/data/archive/"
-  backup_before_load: true
-  retention_days: 90
-
 notifications:
-  success_email: "etl-team@company.com"
-  failure_email: "etl-team@company.com,dba-team@company.com"
-  smtp_host: "smtp.company.com"
-  smtp_port: 587
-  from_address: "nifi-etl@company.com"
+  email:
+    enabled: true
+    smtp_host: "smtp.company.com"
+    smtp_port: 587
+    from: "nifi-etl@company.com"
+    recipients:
+      etl_team: "etl-team@company.com"
+      dba_team: "dba-team@company.com"
+      manager: "manager@company.com"
+
+logging:
+  level: "INFO"
+  log_attributes: true
+  provenance_retention_days: 30
+
+validation:
+  pre_refresh_checks: true
+  post_load_validation: true
+  data_quality_rules:
+    - "NOT NULL checks"
+    - "Referential integrity"
+    - "Row count validation"
+
+backup:
+  enabled: true
+  backup_path: "/data/backup/"
+  retention_days: 90
