@@ -1,425 +1,239 @@
 """
-Data Transformation Module for Daily Sales Load
-Handles data cleansing, SCD logic, and business calculations
+Transform module for Customer Dimension Load
+Implements data cleansing and SCD Type 2 logic
 """
-
 import logging
-import pandas as pd
-import numpy as np
-from datetime import datetime, date
-from typing import Dict, Tuple, Optional
-import yaml
+from typing import Dict, List, Any, Optional, Tuple
+from datetime import datetime
+import re
+
+logger = logging.getLogger(__name__)
 
 
-class DataTransformer:
-    """Transform and cleanse data for staging and dimension tables"""
+class CustomerTransformer:
+    """Transforms and cleanses customer data with SCD Type 2 logic"""
     
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        
+    def cleanse_text(self, text: Optional[str], case: str = 'upper') -> str:
         """
-        Initialize transformer with configuration
+        Cleanse and standardize text fields
         
         Args:
-            config_path: Path to configuration file
+            text: Input text
+            case: 'upper', 'lower', or 'initcap'
+            
+        Returns:
+            Cleansed text
         """
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
+        if not text:
+            return ''
+            
+        # Trim whitespace
+        cleaned = text.strip()
         
-        self.logger = self._setup_logging()
+        # Apply case transformation
+        if case == 'upper':
+            cleaned = cleaned.upper()
+        elif case == 'lower':
+            cleaned = cleaned.lower()
+        elif case == 'initcap':
+            cleaned = cleaned.title()
+            
+        return cleaned
+    
+    def cleanse_phone(self, phone: Optional[str]) -> str:
+        """
+        Cleanse phone number by removing non-numeric characters
         
-    def _setup_logging(self) -> logging.Logger:
-        """Configure logging"""
-        log_path = self.config['logging']['log_path']
+        Args:
+            phone: Input phone number
+            
+        Returns:
+            Cleansed phone number
+        """
+        if not phone:
+            return ''
+            
+        # Remove all non-numeric characters
+        cleaned = re.sub(r'[^0-9]', '', phone)
+        return cleaned
+    
+    def cleanse_customer_record(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Apply data cleansing transformations to customer record
         
-        logging.basicConfig(
-            level=self.config['logging']['level'],
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        Args:
+            record: Raw customer record
+            
+        Returns:
+            Cleansed customer record
+        """
+        cleansed = {}
+        
+        # Keep original ID
+        cleansed['CUSTOMER_ID'] = record.get('CUSTOMER_ID', '')
+        
+        # Cleanse name fields
+        cleansed['FIRST_NAME_CLEAN'] = self.cleanse_text(
+            record.get('FIRST_NAME'), 'upper'
         )
-        return logging.getLogger(__name__)
+        cleansed['LAST_NAME_CLEAN'] = self.cleanse_text(
+            record.get('LAST_NAME'), 'upper'
+        )
+        cleansed['FULL_NAME'] = f"{cleansed['FIRST_NAME_CLEAN']} {cleansed['LAST_NAME_CLEAN']}"
+        
+        # Cleanse contact information
+        cleansed['EMAIL_CLEAN'] = self.cleanse_text(
+            record.get('EMAIL'), 'lower'
+        )
+        cleansed['PHONE_CLEAN'] = self.cleanse_phone(record.get('PHONE'))
+        
+        # Cleanse address fields
+        cleansed['ADDRESS_CLEAN'] = self.cleanse_text(
+            record.get('ADDRESS'), 'initcap'
+        )
+        cleansed['CITY_CLEAN'] = self.cleanse_text(
+            record.get('CITY'), 'upper'
+        )
+        cleansed['STATE_CLEAN'] = self.cleanse_text(
+            record.get('STATE'), 'upper'
+        )
+        cleansed['ZIP_CODE_CLEAN'] = self.cleanse_text(
+            record.get('ZIP_CODE'), 'upper'
+        ).strip()
+        cleansed['COUNTRY_CLEAN'] = self.cleanse_text(
+            record.get('COUNTRY'), 'upper'
+        )
+        
+        # Cleanse business fields
+        cleansed['CUSTOMER_TYPE_CLEAN'] = self.cleanse_text(
+            record.get('CUSTOMER_TYPE'), 'upper'
+        )
+        
+        # Preserve other fields
+        cleansed['REGISTRATION_DATE'] = record.get('REGISTRATION_DATE')
+        cleansed['SOURCE_SYSTEM'] = record.get('SOURCE_SYSTEM', 'CSV_FILE')
+        
+        return cleansed
     
-    def cleanse_customer_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Cleanse and standardize customer data
-        Mimics EXP_CLEANSE_CUSTOMER transformation
-        
-        Args:
-            df: Raw customer DataFrame
-            
-        Returns:
-            Cleansed customer DataFrame
-        """
-        self.logger.info("Starting customer data cleansing")
-        
-        df_clean = df.copy()
-        
-        try:
-            # Clean name fields - UPPER and LTRIM/RTRIM
-            df_clean['FIRST_NAME_CLEAN'] = df_clean['FIRST_NAME'].str.strip().str.upper()
-            df_clean['LAST_NAME_CLEAN'] = df_clean['LAST_NAME'].str.strip().str.upper()
-            df_clean['FULL_NAME'] = df_clean['FIRST_NAME_CLEAN'] + ' ' + df_clean['LAST_NAME_CLEAN']
-            
-            # Clean email - LOWER
-            df_clean['EMAIL_CLEAN'] = df_clean['EMAIL'].str.strip().str.lower()
-            
-            # Clean phone - remove special characters
-            df_clean['PHONE_CLEAN'] = df_clean['PHONE'].str.replace(r'[()-\s]', '', regex=True)
-            
-            # Clean address fields
-            df_clean['ADDRESS_CLEAN'] = df_clean['ADDRESS'].str.strip().str.title()
-            df_clean['CITY_CLEAN'] = df_clean['CITY'].str.strip().str.upper()
-            df_clean['STATE_CLEAN'] = df_clean['STATE'].str.strip().str.upper()
-            df_clean['ZIP_CODE_CLEAN'] = df_clean['ZIP_CODE'].str.strip()
-            df_clean['COUNTRY_CLEAN'] = df_clean['COUNTRY'].str.strip().str.upper()
-            df_clean['CUSTOMER_TYPE_CLEAN'] = df_clean['CUSTOMER_TYPE'].str.strip().str.upper()
-            
-            # Add current timestamp
-            df_clean['CURRENT_TIMESTAMP'] = datetime.now()
-            
-            self.logger.info(f"Cleansed {len(df_clean)} customer records")
-            return df_clean
-            
-        except Exception as e:
-            self.logger.error(f"Error cleansing customer data: {str(e)}")
-            raise
-    
-    def cleanse_product_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Cleanse and standardize product data
-        Mimics EXP_CLEANSE_PRODUCT transformation
-        
-        Args:
-            df: Raw product DataFrame
-            
-        Returns:
-            Cleansed product DataFrame
-        """
-        self.logger.info("Starting product data cleansing")
-        
-        df_clean = df.copy()
-        
-        try:
-            # Clean text fields
-            df_clean['PRODUCT_NAME_CLEAN'] = df_clean['PRODUCT_NAME'].str.strip().str.title()
-            df_clean['PRODUCT_DESC_CLEAN'] = df_clean['PRODUCT_DESCRIPTION'].str.strip()
-            df_clean['CATEGORY_CLEAN'] = df_clean['CATEGORY'].str.strip().str.upper()
-            df_clean['SUB_CATEGORY_CLEAN'] = df_clean['SUB_CATEGORY'].str.strip().str.upper()
-            df_clean['BRAND_CLEAN'] = df_clean['BRAND'].str.strip().str.title()
-            df_clean['SUPPLIER_NAME_CLEAN'] = df_clean['SUPPLIER_NAME'].str.strip().str.title()
-            df_clean['STATUS_CLEAN'] = df_clean['STATUS'].str.strip().str.upper()
-            
-            # Clean numeric fields - round to 2 decimals
-            df_clean['UNIT_PRICE_CLEAN'] = df_clean['UNIT_PRICE'].round(2)
-            df_clean['COST_PRICE_CLEAN'] = df_clean['COST_PRICE'].round(2)
-            
-            # Calculate profit margin
-            df_clean['PROFIT_MARGIN'] = np.where(
-                df_clean['UNIT_PRICE_CLEAN'] > 0,
-                ((df_clean['UNIT_PRICE_CLEAN'] - df_clean['COST_PRICE_CLEAN']) / 
-                 df_clean['UNIT_PRICE_CLEAN'] * 100).round(2),
-                0
-            )
-            
-            # Calculate price range
-            df_clean['PRICE_RANGE'] = pd.cut(
-                df_clean['UNIT_PRICE_CLEAN'],
-                bins=[0, 50, 200, 500, float('inf')],
-                labels=['LOW', 'MEDIUM', 'HIGH', 'PREMIUM']
-            )
-            
-            # Add current timestamp
-            df_clean['CURRENT_TIMESTAMP'] = datetime.now()
-            
-            self.logger.info(f"Cleansed {len(df_clean)} product records")
-            return df_clean
-            
-        except Exception as e:
-            self.logger.error(f"Error cleansing product data: {str(e)}")
-            raise
-    
-    def apply_scd_type2_logic(
+    def detect_changes(
         self, 
-        source_df: pd.DataFrame, 
-        existing_df: pd.DataFrame,
-        key_column: str,
-        compare_columns: list
-    ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        new_record: Dict[str, Any], 
+        existing_record: Optional[Dict[str, Any]]
+    ) -> Tuple[bool, bool]:
         """
-        Apply SCD Type 2 logic to dimension data
-        Mimics LKP_DIM_CUSTOMER and EXP_SCD_LOGIC transformations
+        Determine if record is new or changed (SCD Type 2 logic)
         
         Args:
-            source_df: Source data from staging
-            existing_df: Existing dimension data
-            key_column: Business key column name
-            compare_columns: Columns to compare for changes
+            new_record: Cleansed new record
+            existing_record: Existing dimension record (if any)
             
         Returns:
-            Tuple of (new_records, changed_records, unchanged_records)
+            Tuple of (is_new_record, is_changed)
         """
-        self.logger.info("Applying SCD Type 2 logic")
+        # New record if no existing record found
+        if not existing_record:
+            return (True, False)
         
-        try:
-            # Filter existing records where IS_CURRENT = 'Y'
-            current_records = existing_df[existing_df['IS_CURRENT'] == 'Y'].copy()
+        # Compare key fields to detect changes
+        change_fields = [
+            'FIRST_NAME_CLEAN',
+            'LAST_NAME_CLEAN',
+            'EMAIL_CLEAN',
+            'PHONE_CLEAN',
+            'ADDRESS_CLEAN'
+        ]
+        
+        is_changed = False
+        for field in change_fields:
+            new_value = new_record.get(field, '')
+            existing_value = existing_record.get(field.replace('_CLEAN', ''), '')
             
-            # Merge to identify new vs existing records
-            merged = source_df.merge(
-                current_records,
-                on=key_column,
-                how='left',
-                suffixes=('', '_EXISTING'),
-                indicator=True
-            )
-            
-            # Identify new records
-            new_records = merged[merged['_merge'] == 'left_only'].copy()
-            new_records['IS_NEW_RECORD'] = 1
-            new_records['IS_CHANGED'] = 0
-            
-            # Identify potentially changed records
-            existing_matches = merged[merged['_merge'] == 'both'].copy()
-            
-            # Check for changes in compare columns
-            changed_mask = pd.Series(False, index=existing_matches.index)
-            for col in compare_columns:
-                if col in existing_matches.columns and f"{col}_EXISTING" in existing_matches.columns:
-                    changed_mask |= (existing_matches[col] != existing_matches[f"{col}_EXISTING"])
-            
-            changed_records = existing_matches[changed_mask].copy()
-            changed_records['IS_NEW_RECORD'] = 0
-            changed_records['IS_CHANGED'] = 1
-            
-            unchanged_records = existing_matches[~changed_mask].copy()
-            unchanged_records['IS_NEW_RECORD'] = 0
-            unchanged_records['IS_CHANGED'] = 0
-            
-            # Add SCD metadata
-            current_date = datetime.now()
-            end_date = datetime(9999, 12, 31)
-            
-            for df in [new_records, changed_records]:
-                df['EFFECTIVE_FROM_DATE'] = current_date
-                df['EFFECTIVE_TO_DATE'] = end_date
-                df['IS_CURRENT'] = 'Y'
-                df['CREATED_DATE'] = current_date
-                df['UPDATED_DATE'] = current_date
-            
-            self.logger.info(
-                f"SCD Type 2 - New: {len(new_records)}, "
-                f"Changed: {len(changed_records)}, "
-                f"Unchanged: {len(unchanged_records)}"
-            )
-            
-            return new_records, changed_records, unchanged_records
-            
-        except Exception as e:
-            self.logger.error(f"Error applying SCD Type 2 logic: {str(e)}")
-            raise
+            if new_value != existing_value:
+                logger.debug(
+                    f"Change detected in {field} for customer {new_record.get('CUSTOMER_ID')}: "
+                    f"'{existing_value}' -> '{new_value}'"
+                )
+                is_changed = True
+                break
+        
+        return (False, is_changed)
     
-    def apply_scd_type1_logic(
+    def prepare_dimension_record(
         self,
-        source_df: pd.DataFrame,
-        existing_df: pd.DataFrame,
-        key_column: str,
-        compare_columns: list
-    ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        cleansed_record: Dict[str, Any],
+        customer_key: int,
+        is_new: bool,
+        is_changed: bool
+    ) -> Dict[str, Any]:
         """
-        Apply SCD Type 1 logic to dimension data
-        Mimics LKP_DIM_PRODUCT and EXP_SCD_TYPE1 transformations
+        Prepare final dimension record with SCD Type 2 attributes
         
         Args:
-            source_df: Source data from staging
-            existing_df: Existing dimension data
-            key_column: Business key column name
-            compare_columns: Columns to compare for changes
+            cleansed_record: Cleansed customer data
+            customer_key: Surrogate key value
+            is_new: Whether this is a new customer
+            is_changed: Whether the customer data changed
             
         Returns:
-            Tuple of (new_records, updated_records, unchanged_records)
+            Complete dimension record ready for load
         """
-        self.logger.info("Applying SCD Type 1 logic")
+        current_time = datetime.now()
         
-        try:
-            # Merge to identify new vs existing records
-            merged = source_df.merge(
-                existing_df,
-                on=key_column,
-                how='left',
-                suffixes=('', '_EXISTING'),
-                indicator=True
-            )
-            
-            # Identify new records
-            new_records = merged[merged['_merge'] == 'left_only'].copy()
-            new_records['IS_NEW_RECORD'] = 1
-            new_records['IS_CHANGED'] = 0
-            new_records['CREATED_DATE'] = datetime.now()
-            
-            # Identify existing records
-            existing_matches = merged[merged['_merge'] == 'both'].copy()
-            
-            # Check for changes
-            changed_mask = pd.Series(False, index=existing_matches.index)
-            for col in compare_columns:
-                if col in existing_matches.columns and f"{col}_EXISTING" in existing_matches.columns:
-                    changed_mask |= (existing_matches[col] != existing_matches[f"{col}_EXISTING"])
-            
-            updated_records = existing_matches[changed_mask].copy()
-            updated_records['IS_NEW_RECORD'] = 0
-            updated_records['IS_CHANGED'] = 1
-            updated_records['UPDATED_DATE'] = datetime.now()
-            
-            unchanged_records = existing_matches[~changed_mask].copy()
-            unchanged_records['IS_NEW_RECORD'] = 0
-            unchanged_records['IS_CHANGED'] = 0
-            
-            self.logger.info(
-                f"SCD Type 1 - New: {len(new_records)}, "
-                f"Updated: {len(updated_records)}, "
-                f"Unchanged: {len(unchanged_records)}"
-            )
-            
-            return new_records, updated_records, unchanged_records
-            
-        except Exception as e:
-            self.logger.error(f"Error applying SCD Type 1 logic: {str(e)}")
-            raise
+        dimension_record = {
+            'CUSTOMER_KEY': customer_key,
+            'CUSTOMER_ID': cleansed_record['CUSTOMER_ID'],
+            'FIRST_NAME': cleansed_record['FIRST_NAME_CLEAN'],
+            'LAST_NAME': cleansed_record['LAST_NAME_CLEAN'],
+            'FULL_NAME': cleansed_record['FULL_NAME'],
+            'EMAIL': cleansed_record['EMAIL_CLEAN'],
+            'PHONE': cleansed_record['PHONE_CLEAN'],
+            'ADDRESS': cleansed_record['ADDRESS_CLEAN'],
+            'CITY': cleansed_record['CITY_CLEAN'],
+            'STATE': cleansed_record['STATE_CLEAN'],
+            'ZIP_CODE': cleansed_record['ZIP_CODE_CLEAN'],
+            'COUNTRY': cleansed_record['COUNTRY_CLEAN'],
+            'REGISTRATION_DATE': cleansed_record['REGISTRATION_DATE'],
+            'CUSTOMER_TYPE': cleansed_record['CUSTOMER_TYPE_CLEAN'],
+            'EFFECTIVE_FROM_DATE': current_time,
+            'EFFECTIVE_TO_DATE': datetime(9999, 12, 31),
+            'IS_CURRENT': 'Y',
+            'CREATED_DATE': current_time,
+            'SOURCE_SYSTEM': cleansed_record['SOURCE_SYSTEM']
+        }
+        
+        return dimension_record
     
-    def calculate_sales_measures(
-        self,
-        sales_df: pd.DataFrame,
-        product_lookup: pd.DataFrame
-    ) -> pd.DataFrame:
+    def transform_batch(
+        self, 
+        records: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """
-        Calculate business metrics for sales fact table
-        Mimics EXP_CALCULATE_MEASURES transformation
+        Transform a batch of customer records
         
         Args:
-            sales_df: Sales transaction data
-            product_lookup: Product dimension for cost lookup
+            records: List of raw customer records
             
         Returns:
-            Sales DataFrame with calculated measures
+            List of cleansed customer records
         """
-        self.logger.info("Calculating sales measures")
+        transformed = []
         
-        df = sales_df.copy()
-        
-        try:
-            # Join with product dimension to get cost price
-            df = df.merge(
-                product_lookup[['PRODUCT_ID', 'COST_PRICE']],
-                on='PRODUCT_ID',
-                how='left'
-            )
-            
-            # Calculate date key (YYYYMMDD format)
-            df['DATE_KEY'] = pd.to_datetime(df['TRANSACTION_DATE']).dt.strftime('%Y%m%d').astype(int)
-            
-            # Calculate discount amount
-            df['DISCOUNT_AMOUNT'] = (
-                df['UNIT_PRICE'] * df['QUANTITY'] * df['DISCOUNT_PERCENT'] / 100
-            ).round(2)
-            
-            # Calculate cost amount
-            df['COST_AMOUNT'] = (df['COST_PRICE'] * df['QUANTITY']).round(2)
-            
-            # Calculate profit amount
-            df['PROFIT_AMOUNT'] = (
-                df['TOTAL_AMOUNT'] - df['TAX_AMOUNT'] - df['COST_AMOUNT']
-            ).round(2)
-            
-            # Calculate profit margin percentage
-            df['PROFIT_MARGIN_PERCENT'] = np.where(
-                (df['TOTAL_AMOUNT'] - df['TAX_AMOUNT']) > 0,
-                (df['PROFIT_AMOUNT'] / (df['TOTAL_AMOUNT'] - df['TAX_AMOUNT']) * 100).round(2),
-                0
-            )
-            
-            # Add load timestamp
-            df['LOAD_TIMESTAMP'] = datetime.now()
-            
-            self.logger.info(f"Calculated measures for {len(df)} sales records")
-            return df
-            
-        except Exception as e:
-            self.logger.error(f"Error calculating sales measures: {str(e)}")
-            raise
-    
-    def filter_valid_sales_records(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Filter valid sales transactions
-        Mimics FIL_VALID_RECORDS transformation
-        
-        Args:
-            df: Sales DataFrame
-            
-        Returns:
-            Filtered DataFrame
-        """
-        self.logger.info("Filtering valid sales records")
-        
-        initial_count = len(df)
-        
-        # Apply filters
-        valid_df = df[
-            df['CUSTOMER_ID'].notna() &
-            df['PRODUCT_ID'].notna() &
-            (df['QUANTITY'] > 0) &
-            (df['TOTAL_AMOUNT'] > 0)
-        ].copy()
-        
-        filtered_count = initial_count - len(valid_df)
-        self.logger.info(f"Filtered out {filtered_count} invalid records, kept {len(valid_df)}")
-        
-        return valid_df
-    
-    def deduplicate_sales(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Remove duplicate sales transactions
-        Mimics AGG_DEDUPLICATE transformation
-        
-        Args:
-            df: Sales DataFrame
-            
-        Returns:
-            Deduplicated DataFrame
-        """
-        self.logger.info("Deduplicating sales records")
-        
-        initial_count = len(df)
-        
-        # Keep first occurrence of each TRANSACTION_ID
-        dedup_df = df.drop_duplicates(subset=['TRANSACTION_ID'], keep='first')
-        
-        duplicate_count = initial_count - len(dedup_df)
-        if duplicate_count > 0:
-            self.logger.warning(f"Removed {duplicate_count} duplicate transactions")
-        
-        return dedup_df
+        for record in records:
+            try:
+                cleansed = self.cleanse_customer_record(record)
+                transformed.append(cleansed)
+            except Exception as e:
+                logger.error(
+                    f"Error transforming record {record.get('CUSTOMER_ID')}: {e}"
+                )
+                
+        logger.info(f"Transformed {len(transformed)} of {len(records)} records")
+        return transformed
 
 
-def main():
-    """Main execution function for testing"""
-    transformer = DataTransformer()
-    
-    # Test customer cleansing
-    test_customer = pd.DataFrame({
-        'CUSTOMER_ID': ['C001'],
-        'FIRST_NAME': ['  john  '],
-        'LAST_NAME': ['  doe  '],
-        'EMAIL': ['  JOHN.DOE@EMAIL.COM  '],
-        'PHONE': ['(555) 123-4567'],
-        'ADDRESS': ['123 main street'],
-        'CITY': ['  new york  '],
-        'STATE': ['ny'],
-        'ZIP_CODE': ['10001'],
-        'COUNTRY': ['usa'],
-        'CUSTOMER_TYPE': ['retail']
-    })
-    
-    cleansed = transformer.cleanse_customer_data(test_customer)
-    print("Cleansed Customer Data:")
-    print(cleansed[['FIRST_NAME_CLEAN', 'EMAIL_CLEAN', 'PHONE_CLEAN']].head())
-
-
-if __name__ == "__main__":
-    main()
+def create_transformer(config: Dict[str, Any]) -> CustomerTransformer:
+    """Factory function to create transformer instance"""
+    return CustomerTransformer(config)
