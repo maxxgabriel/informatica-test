@@ -1,332 +1,286 @@
 """
-Data Loading Module for Customer Staging Table
-Loads transformed customer data into staging database
+Load module for Customer Dimension
+Implements SCD Type 2 upsert logic using CUSTOMER_KEY
 """
-
 import logging
-from typing import Dict, Any, Iterator, List
+from typing import Dict, List, Any, Optional
 from datetime import datetime
 import psycopg2
 from psycopg2.extras import execute_batch
-import nipyapi
-from nipyapi.nifi import ProcessorConfigDTO
 
 logger = logging.getLogger(__name__)
 
 
-class CustomerStagingLoader:
-    """Loads customer data into staging table"""
+class CustomerDimensionLoader:
+    """Loads customer dimension with SCD Type 2 logic"""
     
     def __init__(self, config: Dict[str, Any]):
-        """
-        Initialize loader
+        self.config = config
+        self.target_conn_config = config['database']['target']
+        self.target_table = config['targets']['customer_dimension_table']
+        self.sequence_name = config['sequences']['customer_key_sequence']
         
-        Args:
-            config: Configuration dictionary containing database connection info
-        """
-        self.db_config = config['target']['database']
-        self.table_name = config['target']['table_name']
-        self.batch_size = config['target'].get('batch_size', 1000)
-        self.connection = None
-        self.cursor = None
+        # SQL queries from config
+        self.lookup_query = config['queries']['lookup_existing_customer']
+        self.expire_query = config['queries']['expire_old_record']
+        self.insert_query = config['queries']['insert_new_record']
+        self.sequence_query = config['queries']['get_next_customer_key']
         
-    def connect(self):
-        """Establish database connection"""
+        self.batch_size = config['processing']['batch_size']
+        self.commit_interval = config['processing']['commit_interval']
+        
+    def get_connection(self):
+        """Create database connection to target warehouse"""
         try:
-            self.connection = psycopg2.connect(
-                host=self.db_config['host'],
-                port=self.db_config['port'],
-                database=self.db_config['database'],
-                user=self.db_config['user'],
-                password=self.db_config['password']
+            conn = psycopg2.connect(
+                host=self.target_conn_config['url'].split('//')[1].split(':')[0],
+                port=int(self.target_conn_config['url'].split(':')[-1].split('/')[0]),
+                database=self.target_conn_config['url'].split('/')[-1],
+                user=self.target_conn_config['username'],
+                password=self.target_conn_config['password']
             )
-            self.cursor = self.connection.cursor()
-            logger.info("Database connection established")
-        except psycopg2.Error as e:
-            logger.error(f"Database connection failed: {e}")
+            conn.autocommit = False
+            return conn
+        except Exception as e:
+            logger.error(f"Failed to connect to target database: {e}")
             raise
-            
-    def disconnect(self):
-        """Close database connection"""
-        if self.cursor:
-            self.cursor.close()
-        if self.connection:
-            self.connection.close()
-        logger.info("Database connection closed")
-        
-    def load_records(self, records: Iterator[Dict[str, Any]]) -> int:
+    
+    def get_next_customer_key(self, cursor) -> int:
         """
-        Load records into staging table
+        Get next value from customer key sequence
         
         Args:
-            records: Iterator of transformed customer records
+            cursor: Database cursor
             
         Returns:
-            Number of records loaded
-            
-        Raises:
-            psycopg2.Error: If database operation fails
+            Next sequence value
         """
-        if not self.connection:
-            self.connect()
-            
-        insert_sql = self._build_insert_statement()
-        batch = []
-        total_loaded = 0
+        cursor.execute(self.sequence_query)
+        result = cursor.fetchone()
+        return result[0]
+    
+    def lookup_existing_customer(
+        self, 
+        cursor, 
+        customer_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Lookup existing active customer record
         
-        try:
-            for record in records:
-                batch.append(self._prepare_record_for_insert(record))
-                
-                if len(batch) >= self.batch_size:
-                    loaded = self._insert_batch(insert_sql, batch)
-                    total_loaded += loaded
-                    logger.info(f"Loaded batch of {loaded} records. Total: {total_loaded}")
-                    batch = []
-                    
-            # Load remaining records
-            if batch:
-                loaded = self._insert_batch(insert_sql, batch)
-                total_loaded += loaded
-                logger.info(f"Loaded final batch of {loaded} records")
-                
-            self.connection.commit()
-            logger.info(f"Successfully loaded {total_loaded} records to {self.table_name}")
+        Args:
+            cursor: Database cursor
+            customer_id: Natural key to lookup
             
-            return total_loaded
+        Returns:
+            Existing record dict or None
+        """
+        try:
+            cursor.execute(self.lookup_query, (customer_id,))
+            result = cursor.fetchone()
+            
+            if result:
+                columns = [desc[0] for desc in cursor.description]
+                return dict(zip(columns, result))
+            return None
             
         except Exception as e:
-            self.connection.rollback()
-            logger.error(f"Error loading records: {e}")
+            logger.error(f"Error looking up customer {customer_id}: {e}")
             raise
-            
-    def _build_insert_statement(self) -> str:
-        """
-        Build parameterized INSERT statement
-        
-        Returns:
-            SQL INSERT statement
-        """
-        columns = [
-            'RECORD_ID', 'CUSTOMER_ID', 'FIRST_NAME', 'LAST_NAME', 
-            'EMAIL', 'PHONE', 'ADDRESS', 'CITY', 'STATE', 'ZIP_CODE',
-            'COUNTRY', 'REGISTRATION_DATE', 'CUSTOMER_TYPE',
-            'LOAD_DATE', 'SOURCE_SYSTEM'
-        ]
-        
-        placeholders = ', '.join(['%s'] * len(columns))
-        columns_str = ', '.join(columns)
-        
-        return f"""
-            INSERT INTO {self.table_name} ({columns_str})
-            VALUES ({placeholders})
-        """
-        
-    def _prepare_record_for_insert(self, record: Dict[str, Any]) -> tuple:
-        """
-        Prepare record tuple for database insert
-        
-        Args:
-            record: Transformed customer record
-            
-        Returns:
-            Tuple of values for insert
-        """
-        return (
-            record.get('RECORD_ID'),
-            record.get('CUSTOMER_ID'),
-            record.get('FIRST_NAME'),
-            record.get('LAST_NAME'),
-            record.get('EMAIL'),
-            record.get('PHONE'),
-            record.get('ADDRESS'),
-            record.get('CITY'),
-            record.get('STATE'),
-            record.get('ZIP_CODE'),
-            record.get('COUNTRY'),
-            record.get('REGISTRATION_DATE'),
-            record.get('CUSTOMER_TYPE'),
-            record.get('LOAD_DATE'),
-            record.get('SOURCE_SYSTEM')
-        )
-        
-    def _insert_batch(self, sql: str, batch: List[tuple]) -> int:
-        """
-        Insert batch of records
-        
-        Args:
-            sql: INSERT statement
-            batch: List of record tuples
-            
-        Returns:
-            Number of records inserted
-        """
-        execute_batch(self.cursor, sql, batch, page_size=self.batch_size)
-        return len(batch)
-        
-    def truncate_table(self):
-        """Truncate staging table"""
-        try:
-            self.cursor.execute(f"TRUNCATE TABLE {self.table_name}")
-            self.connection.commit()
-            logger.info(f"Truncated table: {self.table_name}")
-        except psycopg2.Error as e:
-            self.connection.rollback()
-            logger.error(f"Error truncating table: {e}")
-            raise
-
-
-class NiFiLoader:
-    """NiFi implementation of data loading"""
     
-    def __init__(self, canvas, config: Dict[str, Any]):
+    def expire_existing_record(self, cursor, customer_key: int) -> None:
         """
-        Initialize NiFi loader
+        Expire existing customer record (SCD Type 2)
         
         Args:
-            canvas: NiFi process group canvas
-            config: Configuration dictionary
+            cursor: Database cursor
+            customer_key: Surrogate key of record to expire
         """
-        self.canvas = canvas
-        self.config = config
-        
-    def create_loading_flow(self) -> Dict[str, Any]:
+        try:
+            cursor.execute(self.expire_query, (customer_key,))
+            logger.debug(f"Expired customer key {customer_key}")
+        except Exception as e:
+            logger.error(f"Error expiring customer key {customer_key}: {e}")
+            raise
+    
+    def insert_dimension_record(
+        self, 
+        cursor, 
+        record: Dict[str, Any]
+    ) -> None:
         """
-        Create NiFi processors for database loading
+        Insert new dimension record
         
+        Args:
+            cursor: Database cursor
+            record: Complete dimension record
+        """
+        try:
+            values = (
+                record['CUSTOMER_KEY'],
+                record['CUSTOMER_ID'],
+                record['FIRST_NAME'],
+                record['LAST_NAME'],
+                record['FULL_NAME'],
+                record['EMAIL'],
+                record['PHONE'],
+                record['ADDRESS'],
+                record['CITY'],
+                record['STATE'],
+                record['ZIP_CODE'],
+                record['COUNTRY'],
+                record['REGISTRATION_DATE'],
+                record['CUSTOMER_TYPE'],
+                record['EFFECTIVE_FROM_DATE'],
+                record['EFFECTIVE_TO_DATE'],
+                record['IS_CURRENT'],
+                record['CREATED_DATE'],
+                record['SOURCE_SYSTEM']
+            )
+            
+            cursor.execute(self.insert_query, values)
+            logger.debug(f"Inserted customer key {record['CUSTOMER_KEY']}")
+            
+        except Exception as e:
+            logger.error(
+                f"Error inserting customer {record.get('CUSTOMER_ID')}: {e}"
+            )
+            raise
+    
+    def process_scd_type2(
+        self,
+        cursor,
+        cleansed_record: Dict[str, Any],
+        existing_record: Optional[Dict[str, Any]],
+        is_new: bool,
+        is_changed: bool
+    ) -> Dict[str, Any]:
+        """
+        Process SCD Type 2 logic for a single record
+        
+        Args:
+            cursor: Database cursor
+            cleansed_record: Cleansed customer data
+            existing_record: Existing dimension record if any
+            is_new: Whether this is a new customer
+            is_changed: Whether customer data changed
+            
         Returns:
-            Dictionary containing created processor IDs
+            Dimension record that was processed
         """
-        logger.info("Creating database loading flow in NiFi")
+        if is_new:
+            # New customer - get new key and insert
+            customer_key = self.get_next_customer_key(cursor)
+            logger.debug(f"New customer {cleansed_record['CUSTOMER_ID']} - key {customer_key}")
+            
+        elif is_changed:
+            # Changed customer - expire old, insert new version
+            old_customer_key = existing_record['CUSTOMER_KEY']
+            self.expire_existing_record(cursor, old_customer_key)
+            
+            customer_key = self.get_next_customer_key(cursor)
+            logger.debug(
+                f"Changed customer {cleansed_record['CUSTOMER_ID']} - "
+                f"expired {old_customer_key}, new key {customer_key}"
+            )
+            
+        else:
+            # No change - skip insert
+            logger.debug(f"Unchanged customer {cleansed_record['CUSTOMER_ID']} - skipped")
+            return None
         
-        # ConvertRecord to prepare for database
-        convert_record = self._create_convert_record_processor()
+        # Prepare and insert dimension record
+        from src.transform import CustomerTransformer
+        transformer = CustomerTransformer(self.config)
         
-        # PutDatabaseRecord to insert into staging table
-        put_database = self._create_put_database_processor()
-        
-        # LogAttribute for success tracking
-        log_success = self._create_log_processor('success')
-        
-        # LogAttribute for failure tracking
-        log_failure = self._create_log_processor('failure')
-        
-        # Connect processors
-        self._connect_processors(convert_record, put_database)
-        nipyapi.canvas.create_connection(
-            source=put_database,
-            target=log_success,
-            relationships=['success']
+        dimension_record = transformer.prepare_dimension_record(
+            cleansed_record, customer_key, is_new, is_changed
         )
-        nipyapi.canvas.create_connection(
-            source=put_database,
-            target=log_failure,
-            relationships=['failure', 'retry']
-        )
         
-        return {
-            'convert_record': convert_record.id,
-            'put_database': put_database.id,
-            'log_success': log_success.id,
-            'log_failure': log_failure.id
+        self.insert_dimension_record(cursor, dimension_record)
+        
+        return dimension_record
+    
+    def load_dimension_batch(
+        self,
+        cleansed_records: List[Dict[str, Any]],
+        scd_analysis: List[Dict[str, Any]]
+    ) -> Dict[str, int]:
+        """
+        Load batch of customer dimension records with SCD Type 2
+        
+        Args:
+            cleansed_records: List of cleansed customer records
+            scd_analysis: List of dicts with existing_record, is_new, is_changed
+            
+        Returns:
+            Dictionary with load statistics
+        """
+        conn = None
+        stats = {
+            'new_records': 0,
+            'changed_records': 0,
+            'unchanged_records': 0,
+            'errors': 0
         }
         
-    def _create_convert_record_processor(self):
-        """Create ConvertRecord processor"""
-        processor = nipyapi.canvas.create_processor(
-            parent_pg=self.canvas,
-            processor=nipyapi.canvas.get_processor_type('org.apache.nifi.processors.standard.ConvertRecord'),
-            location=(100, 850),
-            name='Prepare for Database',
-            config=ProcessorConfigDTO(
-                properties={
-                    'Record Reader': 'JsonRecordReader',
-                    'Record Writer': 'JsonRecordSetWriter',
-                    'Include Zero Record FlowFiles': 'false'
-                },
-                auto_terminated_relationships=['failure']
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            processed_count = 0
+            
+            for cleansed, analysis in zip(cleansed_records, scd_analysis):
+                try:
+                    result = self.process_scd_type2(
+                        cursor,
+                        cleansed,
+                        analysis['existing_record'],
+                        analysis['is_new'],
+                        analysis['is_changed']
+                    )
+                    
+                    if analysis['is_new']:
+                        stats['new_records'] += 1
+                    elif analysis['is_changed']:
+                        stats['changed_records'] += 1
+                    else:
+                        stats['unchanged_records'] += 1
+                    
+                    processed_count += 1
+                    
+                    # Commit at intervals
+                    if processed_count % self.commit_interval == 0:
+                        conn.commit()
+                        logger.info(f"Committed {processed_count} records")
+                        
+                except Exception as e:
+                    logger.error(
+                        f"Error processing customer {cleansed.get('CUSTOMER_ID')}: {e}"
+                    )
+                    stats['errors'] += 1
+                    conn.rollback()
+            
+            # Final commit
+            conn.commit()
+            logger.info(
+                f"Load complete: {stats['new_records']} new, "
+                f"{stats['changed_records']} changed, "
+                f"{stats['unchanged_records']} unchanged, "
+                f"{stats['errors']} errors"
             )
-        )
-        logger.info(f"Created ConvertRecord processor: {processor.id}")
-        return processor
-        
-    def _create_put_database_processor(self):
-        """Create PutDatabaseRecord processor"""
-        processor = nipyapi.canvas.create_processor(
-            parent_pg=self.canvas,
-            processor=nipyapi.canvas.get_processor_type('org.apache.nifi.processors.standard.PutDatabaseRecord'),
-            location=(100, 1000),
-            name='Load to Staging Table',
-            config=ProcessorConfigDTO(
-                properties={
-                    'Record Reader': 'JsonRecordReader',
-                    'Statement Type': 'INSERT',
-                    'Database Connection Pooling Service': self._create_dbcp_service(),
-                    'Table Name': self.config['target']['table_name'],
-                    'Maximum Batch Size': str(self.config['target'].get('batch_size', 1000)),
-                    'Transaction Timeout': '300 sec',
-                    'Rollback On Failure': 'true'
-                }
-            )
-        )
-        logger.info(f"Created PutDatabaseRecord processor: {processor.id}")
-        return processor
-        
-    def _create_log_processor(self, log_type: str):
-        """Create LogAttribute processor for tracking"""
-        processor = nipyapi.canvas.create_processor(
-            parent_pg=self.canvas,
-            processor=nipyapi.canvas.get_processor_type('org.apache.nifi.processors.standard.LogAttribute'),
-            location=(300 if log_type == 'success' else 500, 1150),
-            name=f'Log {log_type.title()}',
-            config=ProcessorConfigDTO(
-                properties={
-                    'Log Level': 'info' if log_type == 'success' else 'error',
-                    'Log Payload': 'false',
-                    'Attributes to Log': 'record.count,fragment.count',
-                    'Attributes to Log Regex': '.*'
-                },
-                auto_terminated_relationships=['success']
-            )
-        )
-        logger.info(f"Created LogAttribute processor for {log_type}: {processor.id}")
-        return processor
-        
-    def _create_dbcp_service(self) -> str:
-        """Create database connection pool service"""
-        # This would create a DBCP service in NiFi
-        # Simplified for example
-        return 'dbcp-service-id'
-        
-    def _connect_processors(self, source, destination):
-        """Connect two processors"""
-        nipyapi.canvas.create_connection(
-            source=source,
-            target=destination,
-            relationships=['success']
-        )
-        logger.info(f"Connected {source.component.name} to {destination.component.name}")
+            
+        except Exception as e:
+            logger.error(f"Error loading dimension batch: {e}")
+            if conn:
+                conn.rollback()
+            raise
+        finally:
+            if conn:
+                conn.close()
+                
+        return stats
 
 
-def load_customer_data(
-    records: Iterator[Dict[str, Any]], 
-    config: Dict[str, Any]
-) -> int:
-    """
-    Main loading function
-    
-    Args:
-        records: Iterator of transformed customer records
-        config: Configuration dictionary
-        
-    Returns:
-        Number of records loaded
-    """
-    loader = CustomerStagingLoader(config)
-    
-    try:
-        loader.connect()
-        record_count = loader.load_records(records)
-        return record_count
-    finally:
-        loader.disconnect()
+def create_loader(config: Dict[str, Any]) -> CustomerDimensionLoader:
+    """Factory function to create loader instance"""
+    return CustomerDimensionLoader(config)
