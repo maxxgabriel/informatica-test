@@ -1,94 +1,94 @@
-# NiFi Full Refresh Workflow Configuration
-# Migration from Informatica wf_FULL_REFRESH
-# Truncate-all pattern with bulk load using 100K commit intervals
-
-workflow:
-  name: "wf_FULL_REFRESH"
-  description: "Monthly full refresh with truncate-all pattern and bulk load optimization"
-  schedule: "0 0 1 * *"  # First day of month at midnight
+# Full Refresh Workflow Configuration
+# Monthly truncate and reload for dimension and fact tables
 
 nifi:
   base_url: "http://localhost:8080/nifi-api"
-  root_process_group: "root"
-  process_group_name: "FULL_REFRESH_WORKFLOW"
-
+  process_group_name: "wf_FULL_REFRESH"
+  
 database:
   staging:
-    connection_pool: "staging-db-pool"
-    schema: "STG"
-    tables:
-      - "STG_CUSTOMER"
-      - "STG_PRODUCT"
-      - "STG_SALES"
-  
+    host: "${DB_STAGING_HOST}"
+    port: 5432
+    database: "${DB_STAGING_NAME}"
+    username: "${DB_STAGING_USER}"
+    password: "${DB_STAGING_PASS}"
+    
   warehouse:
-    connection_pool: "warehouse-db-pool"
-    schema: "DWH"
-    dimension_tables:
-      - "DIM_CUSTOMER"
-      - "DIM_PRODUCT"
-    fact_tables:
-      - "FACT_SALES"
+    host: "${DB_WAREHOUSE_HOST}"
+    port: 5432
+    database: "${DB_WAREHOUSE_NAME}"
+    username: "${DB_WAREHOUSE_USER}"
+    password: "${DB_WAREHOUSE_PASS}"
 
-sources:
-  file_path: "/data/source/"
-  archive_path: "/data/archive/"
-  patterns:
-    customer: "customer_master.csv"
-    product: "product_master.csv"
-    sales: "sales_transactions_*.csv"
-  
-  file_format:
-    type: "CSV"
-    delimiter: ","
-    header: true
-    charset: "UTF-8"
+source_files:
+  base_path: "${SOURCE_FILE_PATH:/data/sources}"
+  archive_path: "${ARCHIVE_PATH:/data/archive}"
+  customer: "customer_master.csv"
+  product: "product_master.csv"
+  sales: "sales_transactions_*.csv"
 
-performance:
-  bulk_load:
-    enabled: true
-    commit_interval: 100000
-    batch_size: 10000
-  
-  partitioning:
-    enabled: true
-    partition_count: 4
-    partition_type: "HASH"
-  
-  connection_pools:
-    max_connections: 10
-    min_connections: 2
+staging_tables:
+  customer: "STG_CUSTOMER"
+  product: "STG_PRODUCT"
+  sales: "STG_SALES"
 
-error_handling:
-  max_retries: 3
-  retry_delay_seconds: 60
-  failure_strategy: "ROLLBACK"
-  
+dimension_tables:
+  customer: "DIM_CUSTOMER"
+  product: "DIM_PRODUCT"
+
+fact_tables:
+  sales: "FACT_SALES"
+
 notifications:
-  email:
-    enabled: true
-    smtp_host: "smtp.company.com"
-    smtp_port: 587
-    from: "nifi-etl@company.com"
-    recipients:
-      etl_team: "etl-team@company.com"
-      dba_team: "dba-team@company.com"
-      manager: "manager@company.com"
+  error_email: "${ERROR_EMAIL_TO:etl-team@company.com}"
+  dba_email: "${DBA_EMAIL:dba-team@company.com}"
+  manager_email: "${MANAGER_EMAIL:manager@company.com}"
 
-logging:
-  level: "INFO"
-  log_attributes: true
-  provenance_retention_days: 30
+execution:
+  bulk_load_batch_size: 100000
+  commit_interval: 50000
+  partition_count: 4
+  enable_parallelism: true
+  max_concurrent_tasks: 4
 
-validation:
-  pre_refresh_checks: true
-  post_load_validation: true
-  data_quality_rules:
-    - "NOT NULL checks"
-    - "Referential integrity"
-    - "Row count validation"
+scripts:
+  pre_refresh_validation: "/scripts/pre_refresh_validation.sh"
+  full_backup: "/scripts/full_backup.sh"
+  disable_constraints: "/scripts/disable_constraints.sh"
+  enable_constraints: "/scripts/enable_constraints.sh"
+  truncate_staging: "/scripts/truncate_staging.sh"
+  truncate_dimensions: "/scripts/truncate_dimensions.sh"
+  truncate_fact: "/scripts/truncate_fact.sh"
+  rebuild_indexes: "/scripts/rebuild_indexes.sh"
+  update_statistics: "/scripts/update_statistics.sh"
+  data_validation: "/scripts/data_validation.sh"
 
-backup:
-  enabled: true
-  backup_path: "/data/backup/"
-  retention_days: 90
+sequence_generators:
+  customer_key:
+    start_value: 1
+    increment: 1
+    cache_size: 1000
+  product_key:
+    start_value: 1
+    increment: 1
+    cache_size: 1000
+  sales_key:
+    start_value: 1
+    increment: 1
+    cache_size: 1000
+
+scd_config:
+  customer:
+    type: "TYPE2"
+    effective_date_column: "EFFECTIVE_FROM_DATE"
+    expiry_date_column: "EFFECTIVE_TO_DATE"
+    current_flag_column: "IS_CURRENT"
+    default_expiry_date: "9999-12-31"
+  product:
+    type: "TYPE1"
+    
+workflow:
+  schedule: "0 0 1 * *"  # First day of month at midnight
+  timeout_seconds: 14400  # 4 hours
+  retry_attempts: 3
+  retry_delay_seconds: 300
