@@ -1,370 +1,174 @@
 """
-Transform module for m_LOAD_STG_PRODUCT
-Applies data transformations and adds metadata fields
+Transform module for m_LOAD_STG_SALES
+Adds metadata fields: LOAD_DATE, SOURCE_SYSTEM, RECORD_ID
 """
+
 import logging
-from typing import Dict, Any, Generator
+import pandas as pd
+import yaml
 from datetime import datetime
-from decimal import Decimal, ROUND_HALF_UP
-import nipyapi
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
-class ProductTransformer:
-    """Transform product data and add staging metadata"""
+class SalesDataTransformer:
+    """Transform sales data by adding metadata fields"""
     
-    def __init__(self, config: Dict[str, Any]):
-        """
-        Initialize transformer with configuration
+    def __init__(self, config_path: str = "config.yaml"):
+        """Initialize transformer with configuration"""
+        with open(config_path, 'r') as f:
+            self.config = yaml.safe_load(f)
         
-        Args:
-            config: Configuration dictionary with transformation settings
-        """
-        self.config = config
-        self.source_system = config['staging']['source_system']
-        self.record_id_start = config['staging'].get('record_id_start', 1)
-        self.current_record_id = self.record_id_start
+        self.metadata_config = self.config['metadata']
+        self.target_config = self.config['target']
         
-    def transform(self, records: Generator[Dict[str, Any], None, None]) -> Generator[Dict[str, Any], None, None]:
-        """
-        Transform product records and add metadata
-        
-        Args:
-            records: Generator of extracted product records
-            
-        Yields:
-            Transformed records with metadata
-        """
-        logger.info("Starting transformation process")
-        transform_count = 0
-        error_count = 0
-        
-        for record in records:
-            try:
-                transformed = self._transform_record(record)
-                transform_count += 1
-                yield transformed
-            except Exception as e:
-                error_count += 1
-                logger.error(f"Error transforming record {record.get('PRODUCT_ID')}: {e}")
-                continue
-                
-        logger.info(f"Transformation complete. Processed: {transform_count}, Errors: {error_count}")
+        # Initialize sequence counter for RECORD_ID
+        self.record_id_counter = self.metadata_config['record_id_start']
     
-    def _transform_record(self, record: Dict[str, Any]) -> Dict[str, Any]:
+    def add_metadata_fields(self, df: pd.DataFrame, 
+                           load_date: Optional[datetime] = None) -> pd.DataFrame:
         """
-        Transform individual product record
-        
-        Args:
-            record: Source record dictionary
-            
-        Returns:
-            Transformed record with metadata and cleansed fields
+        Add metadata fields to the DataFrame
+        - LOAD_DATE: Current timestamp
+        - SOURCE_SYSTEM: Static value from config
+        - RECORD_ID: Auto-incrementing sequence
         """
-        # Add metadata fields
-        transformed = {
-            'RECORD_ID': self._get_next_record_id(),
-            'LOAD_DATE': datetime.now(),
-            'SOURCE_SYSTEM': self.source_system
-        }
+        logger.info(f"Adding metadata fields to {len(df)} records")
         
-        # Apply data cleansing transformations
-        transformed['PRODUCT_ID'] = self._cleanse_product_id(record['PRODUCT_ID'])
-        transformed['PRODUCT_NAME'] = self._cleanse_text(record['PRODUCT_NAME'], capitalize='title')
-        transformed['PRODUCT_DESCRIPTION'] = self._cleanse_text(record['PRODUCT_DESCRIPTION'])
-        transformed['CATEGORY'] = self._cleanse_text(record['CATEGORY'], capitalize='upper')
-        transformed['SUB_CATEGORY'] = self._cleanse_text(record['SUB_CATEGORY'], capitalize='upper')
-        transformed['BRAND'] = self._cleanse_text(record['BRAND'], capitalize='title')
+        if df.empty:
+            logger.warning("Empty DataFrame provided for transformation")
+            return df
         
-        # Numeric field transformations
-        transformed['UNIT_PRICE'] = self._round_decimal(record['UNIT_PRICE'], 2)
-        transformed['COST_PRICE'] = self._round_decimal(record['COST_PRICE'], 2)
-        transformed['WEIGHT'] = self._round_decimal(record['WEIGHT'], 2)
+        # Make a copy to avoid modifying original
+        transformed_df = df.copy()
         
-        # Other fields
-        transformed['SUPPLIER_ID'] = self._cleanse_text(record['SUPPLIER_ID'])
-        transformed['SUPPLIER_NAME'] = self._cleanse_text(record['SUPPLIER_NAME'], capitalize='title')
-        transformed['DIMENSIONS'] = self._cleanse_text(record['DIMENSIONS'])
-        transformed['COLOR'] = self._cleanse_text(record['COLOR'], capitalize='title')
-        transformed['SIZE'] = self._cleanse_text(record['SIZE'], capitalize='upper')
-        transformed['MATERIAL'] = self._cleanse_text(record['MATERIAL'], capitalize='title')
-        transformed['STATUS'] = self._cleanse_text(record['STATUS'], capitalize='upper')
+        # Add LOAD_DATE
+        if load_date is None:
+            load_date = datetime.now()
         
-        # Calculate derived fields
-        transformed['PROFIT_MARGIN'] = self._calculate_profit_margin(
-            transformed['UNIT_PRICE'], 
-            transformed['COST_PRICE']
+        load_date_field = self.metadata_config['load_date_field']
+        transformed_df[load_date_field] = load_date
+        logger.info(f"Added {load_date_field}: {load_date}")
+        
+        # Add SOURCE_SYSTEM
+        source_system = self.metadata_config['source_system']
+        transformed_df['SOURCE_SYSTEM'] = source_system
+        logger.info(f"Added SOURCE_SYSTEM: {source_system}")
+        
+        # Add RECORD_ID (sequence)
+        record_id_field = self.metadata_config['record_id_field']
+        increment = self.metadata_config['record_id_increment']
+        
+        num_records = len(transformed_df)
+        record_ids = range(
+            self.record_id_counter,
+            self.record_id_counter + (num_records * increment),
+            increment
         )
-        transformed['PRICE_RANGE'] = self._calculate_price_range(transformed['UNIT_PRICE'])
         
-        # Add audit timestamp
-        transformed['CREATED_TIMESTAMP'] = datetime.now()
+        transformed_df[record_id_field] = list(record_ids)
         
-        return transformed
+        # Update counter for next batch
+        self.record_id_counter += num_records * increment
+        
+        logger.info(f"Added {record_id_field}: {num_records} sequence values starting from {self.record_id_counter - (num_records * increment)}")
+        
+        return transformed_df
     
-    def _get_next_record_id(self) -> int:
-        """
-        Get next record ID in sequence
+    def reorder_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Reorder columns to match target table structure"""
+        target_fields = self.target_config['fields']
         
-        Returns:
-            Next record ID
-        """
-        record_id = self.current_record_id
-        self.current_record_id += 1
-        return record_id
+        # Only reorder columns that exist in the DataFrame
+        existing_fields = [field for field in target_fields if field in df.columns]
+        
+        # Add any extra columns at the end
+        extra_fields = [col for col in df.columns if col not in existing_fields]
+        
+        reordered_df = df[existing_fields + extra_fields]
+        
+        logger.info(f"Reordered columns to match target structure")
+        
+        return reordered_df
     
-    @staticmethod
-    def _cleanse_text(text: str, capitalize: str = None) -> str:
+    def apply_transformations(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Cleanse text field - trim and optionally capitalize
-        
-        Args:
-            text: Input text
-            capitalize: Capitalization mode ('upper', 'lower', 'title', None)
-            
-        Returns:
-            Cleansed text
+        Apply all transformations:
+        1. Add metadata fields
+        2. Reorder columns
+        3. Final validation
         """
-        if not text:
-            return ''
-            
-        cleansed = text.strip()
+        logger.info(f"Starting transformation of {len(df)} records")
         
-        if capitalize == 'upper':
-            cleansed = cleansed.upper()
-        elif capitalize == 'lower':
-            cleansed = cleansed.lower()
-        elif capitalize == 'title':
-            cleansed = cleansed.title()
-            
-        return cleansed
+        # Add metadata
+        transformed_df = self.add_metadata_fields(df)
+        
+        # Reorder columns
+        transformed_df = self.reorder_columns(transformed_df)
+        
+        # Validate final output
+        self._validate_output(transformed_df)
+        
+        logger.info(f"Transformation completed: {len(transformed_df)} records ready for load")
+        
+        return transformed_df
     
-    @staticmethod
-    def _cleanse_product_id(product_id: str) -> str:
-        """
-        Cleanse product ID - uppercase and trim
+    def _validate_output(self, df: pd.DataFrame):
+        """Validate transformed data before load"""
+        target_fields = self.target_config['fields']
         
-        Args:
-            product_id: Input product ID
-            
-        Returns:
-            Cleansed product ID
-        """
-        return product_id.strip().upper()
+        # Check for missing required fields
+        missing_fields = set(target_fields) - set(df.columns)
+        if missing_fields:
+            raise ValueError(f"Missing required target fields: {missing_fields}")
+        
+        # Check for null values in key fields
+        key_fields = ['RECORD_ID', 'TRANSACTION_ID', 'LOAD_DATE', 'SOURCE_SYSTEM']
+        for field in key_fields:
+            if field in df.columns:
+                null_count = df[field].isna().sum()
+                if null_count > 0:
+                    logger.warning(f"Found {null_count} null values in key field: {field}")
+        
+        # Log data quality metrics
+        logger.info("Output validation summary:")
+        logger.info(f"  Total records: {len(df)}")
+        logger.info(f"  Total columns: {len(df.columns)}")
+        logger.info(f"  Memory usage: {df.memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB")
     
-    @staticmethod
-    def _round_decimal(value: float, places: int) -> Decimal:
-        """
-        Round decimal to specified places
+    def reset_sequence(self, start_value: Optional[int] = None):
+        """Reset the RECORD_ID sequence counter"""
+        if start_value is None:
+            start_value = self.metadata_config['record_id_start']
         
-        Args:
-            value: Numeric value
-            places: Decimal places
-            
-        Returns:
-            Rounded Decimal value
-        """
-        if value is None:
-            return Decimal('0')
-            
-        decimal_value = Decimal(str(value))
-        quantizer = Decimal(10) ** -places
-        return decimal_value.quantize(quantizer, rounding=ROUND_HALF_UP)
-    
-    @staticmethod
-    def _calculate_profit_margin(unit_price: Decimal, cost_price: Decimal) -> Decimal:
-        """
-        Calculate profit margin percentage
-        
-        Args:
-            unit_price: Product unit price
-            cost_price: Product cost price
-            
-        Returns:
-            Profit margin percentage
-        """
-        if unit_price <= 0:
-            return Decimal('0')
-            
-        margin = ((unit_price - cost_price) / unit_price) * 100
-        return margin.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-    
-    @staticmethod
-    def _calculate_price_range(unit_price: Decimal) -> str:
-        """
-        Calculate price range category
-        
-        Args:
-            unit_price: Product unit price
-            
-        Returns:
-            Price range category (LOW, MEDIUM, HIGH, PREMIUM)
-        """
-        price = float(unit_price)
-        
-        if price < 50:
-            return 'LOW'
-        elif price < 200:
-            return 'MEDIUM'
-        elif price < 500:
-            return 'HIGH'
-        else:
-            return 'PREMIUM'
+        self.record_id_counter = start_value
+        logger.info(f"Reset RECORD_ID sequence to {start_value}")
 
 
-class NiFiProductTransformer:
-    """NiFi-based transformer using UpdateAttribute and JoltTransform processors"""
-    
-    def __init__(self, config: Dict[str, Any], canvas: Any):
-        """
-        Initialize NiFi transformer
-        
-        Args:
-            config: Configuration dictionary
-            canvas: NiFi canvas object (process group)
-        """
-        self.config = config
-        self.canvas = canvas
-        
-    def create_transform_flow(self, source_processor_id: str) -> Dict[str, Any]:
-        """
-        Create NiFi flow for product transformation
-        
-        Args:
-            source_processor_id: ID of upstream processor to connect from
-            
-        Returns:
-            Dictionary with created processor IDs
-        """
-        logger.info("Creating NiFi transform flow")
-        
-        source_processor = nipyapi.canvas.get_processor(source_processor_id, 'id')
-        
-        # Create UpdateAttribute for metadata
-        update_metadata = nipyapi.canvas.create_processor(
-            parent_pg=self.canvas,
-            processor=nipyapi.canvas.get_processor_type('org.apache.nifi.processors.attributes.UpdateAttribute'),
-            location=(900, 100),
-            name='AddMetadata',
-            config=nipyapi.nifi.ProcessorConfigDTO(
-                properties={
-                    'LOAD_DATE': "${now():format('yyyy-MM-dd HH:mm:ss')}",
-                    'SOURCE_SYSTEM': self.config['staging']['source_system'],
-                    'RECORD_ID': "${nextInt()}"
-                }
-            )
-        )
-        
-        # Create UpdateAttribute for data cleansing
-        cleanse_data = nipyapi.canvas.create_processor(
-            parent_pg=self.canvas,
-            processor=nipyapi.canvas.get_processor_type('org.apache.nifi.processors.attributes.UpdateAttribute'),
-            location=(1100, 100),
-            name='CleanseFields',
-            config=nipyapi.nifi.ProcessorConfigDTO(
-                properties={
-                    'PRODUCT_NAME': "${product.name:trim():toUpper()}",
-                    'CATEGORY': "${product.category:trim():toUpper()}",
-                    'STATUS': "${product.status:trim():toUpper()}",
-                    'UNIT_PRICE': "${product.price:trim()}",
-                    'COST_PRICE': "${product.cost:trim()}"
-                }
-            )
-        )
-        
-        # Create JoltTransformJSON for complex transformations
-        jolt_spec = {
-            "operation": "shift",
-            "spec": {
-                "PRODUCT_ID": "PRODUCT_ID",
-                "PRODUCT_NAME": "PRODUCT_NAME",
-                "PRODUCT_DESCRIPTION": "PRODUCT_DESCRIPTION",
-                "CATEGORY": "CATEGORY",
-                "SUB_CATEGORY": "SUB_CATEGORY",
-                "BRAND": "BRAND",
-                "UNIT_PRICE": "UNIT_PRICE",
-                "COST_PRICE": "COST_PRICE",
-                "SUPPLIER_ID": "SUPPLIER_ID",
-                "SUPPLIER_NAME": "SUPPLIER_NAME",
-                "WEIGHT": "WEIGHT",
-                "DIMENSIONS": "DIMENSIONS",
-                "COLOR": "COLOR",
-                "SIZE": "SIZE",
-                "MATERIAL": "MATERIAL",
-                "STATUS": "STATUS",
-                "LOAD_DATE": "LOAD_DATE",
-                "SOURCE_SYSTEM": "SOURCE_SYSTEM",
-                "RECORD_ID": "RECORD_ID"
-            }
-        }
-        
-        jolt_transform = nipyapi.canvas.create_processor(
-            parent_pg=self.canvas,
-            processor=nipyapi.canvas.get_processor_type('org.apache.nifi.processors.standard.JoltTransformJSON'),
-            location=(1300, 100),
-            name='TransformToStaging',
-            config=nipyapi.nifi.ProcessorConfigDTO(
-                properties={
-                    'Jolt Specification': str(jolt_spec),
-                    'Jolt Transform': 'jolt-transform-shift'
-                },
-                auto_terminated_relationships=['failure']
-            )
-        )
-        
-        # Create EvaluateJsonPath for derived calculations
-        evaluate_json = nipyapi.canvas.create_processor(
-            parent_pg=self.canvas,
-            processor=nipyapi.canvas.get_processor_type('org.apache.nifi.processors.standard.EvaluateJsonPath'),
-            location=(1500, 100),
-            name='CalculateDerivedFields',
-            config=nipyapi.nifi.ProcessorConfigDTO(
-                properties={
-                    'Destination': 'flowfile-attribute',
-                    'PROFIT_MARGIN': '$[?($.UNIT_PRICE > 0)].divide(subtract($.UNIT_PRICE, $.COST_PRICE), $.UNIT_PRICE)',
-                    'PRICE_RANGE': '${literal("LOW"):ifElse(${UNIT_PRICE:lt(50)}, ${literal("MEDIUM"):ifElse(${UNIT_PRICE:lt(200)}, ${literal("HIGH"):ifElse(${UNIT_PRICE:lt(500)}, "PREMIUM")})})}' 
-                }
-            )
-        )
-        
-        # Connect processors
-        nipyapi.canvas.create_connection(source_processor, update_metadata, ['matched'])
-        nipyapi.canvas.create_connection(update_metadata, cleanse_data, ['success'])
-        nipyapi.canvas.create_connection(cleanse_data, jolt_transform, ['success'])
-        nipyapi.canvas.create_connection(jolt_transform, evaluate_json, ['success'])
-        
-        logger.info("Transform flow created successfully")
-        
-        return {
-            'update_metadata': update_metadata.id,
-            'cleanse_data': cleanse_data.id,
-            'jolt_transform': jolt_transform.id,
-            'evaluate_json': evaluate_json.id
-        }
-
-
-def main():
-    """Main transformation function for testing"""
-    import yaml
-    from extract import ProductExtractor
-    
+if __name__ == "__main__":
+    # Test transformation
     logging.basicConfig(level=logging.INFO)
     
-    # Load config
-    with open('config.yaml', 'r') as f:
-        config = yaml.safe_load(f)
+    # Create sample data
+    test_data = pd.DataFrame({
+        'TRANSACTION_ID': ['T001', 'T002', 'T003'],
+        'TRANSACTION_DATE': ['2024-01-01', '2024-01-02', '2024-01-03'],
+        'CUSTOMER_ID': ['C001', 'C002', 'C003'],
+        'PRODUCT_ID': ['P001', 'P002', 'P003'],
+        'QUANTITY': [5, 10, 3],
+        'UNIT_PRICE': [10.50, 25.00, 15.75],
+        'DISCOUNT_PERCENT': [0, 5, 10],
+        'TAX_AMOUNT': [5.25, 11.88, 4.25],
+        'TOTAL_AMOUNT': [57.75, 249.38, 46.75],
+        'PAYMENT_METHOD': ['CARD', 'CASH', 'CARD'],
+        'STORE_ID': ['S001', 'S002', 'S001'],
+        'REGION': ['EAST', 'WEST', 'EAST']
+    })
     
-    # Extract and transform
-    extractor = ProductExtractor(config)
-    transformer = ProductTransformer(config)
+    transformer = SalesDataTransformer()
+    transformed = transformer.apply_transformations(test_data)
     
-    records = extractor.extract()
-    transformed_records = transformer.transform(records)
-    
-    for record in transformed_records:
-        print(record)
-
-
-if __name__ == '__main__':
-    main()
+    print(f"\nTransformed data ({len(transformed)} rows):")
+    print(transformed)
+    print(f"\nColumns: {list(transformed.columns)}")
