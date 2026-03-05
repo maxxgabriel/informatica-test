@@ -1,122 +1,118 @@
-# NiFi Sales Fact Referential Integrity Configuration
-# Purpose: Validate dimension keys and handle orphaned fact records
+# NiFi Migration Configuration for m_LOAD_STG_SALES
+# Extract, Filter and Transform sales staging data with quality filters
 
 nifi:
-  process_group_name: "Sales_Fact_Referential_Integrity"
-  parent_pg_id: "root"  # Set to actual parent PG ID in deployment
+  base_url: "http://localhost:8080/nifi-api"
+  process_group_name: "LOAD_STG_SALES"
+  
+source:
+  type: "csv"
+  file_path: "/data/source/sales_transactions_*.csv"
+  file_pattern: "sales_transactions_.*\\.csv"
+  delimiter: ","
+  has_header: true
+  encoding: "UTF-8"
+  
+  # Source fields schema
+  fields:
+    - name: "TRANSACTION_ID"
+      type: "string"
+      length: 30
+    - name: "TRANSACTION_DATE"
+      type: "datetime"
+      format: "%Y-%m-%d %H:%M:%S"
+    - name: "CUSTOMER_ID"
+      type: "string"
+      length: 20
+    - name: "PRODUCT_ID"
+      type: "string"
+      length: 20
+    - name: "QUANTITY"
+      type: "integer"
+    - name: "UNIT_PRICE"
+      type: "decimal"
+      precision: 10
+      scale: 2
+    - name: "DISCOUNT_PERCENT"
+      type: "decimal"
+      precision: 5
+      scale: 2
+    - name: "TAX_AMOUNT"
+      type: "decimal"
+      precision: 10
+      scale: 2
+    - name: "TOTAL_AMOUNT"
+      type: "decimal"
+      precision: 10
+      scale: 2
+    - name: "PAYMENT_METHOD"
+      type: "string"
+      length: 20
+    - name: "STORE_ID"
+      type: "string"
+      length: 20
+    - name: "REGION"
+      type: "string"
+      length: 50
 
-database:
-  connection_service_name: "DatabaseConnectionPool"
-  
-  # Staging table
-  staging_table: "STG_SALES"
-  
-  # Dimension tables
-  customer_dim_table: "DIM_CUSTOMER"
-  product_dim_table: "DIM_PRODUCT"
-  
-  # Fact table
-  fact_table: "FACT_SALES"
-  
-  # Error/reject table
-  reject_table: "REJ_SALES_FACT"
+# Quality filters (from Source Qualifier filter condition)
+quality_filters:
+  quantity_threshold: 0  # QUANTITY > 0
+  total_amount_threshold: 0  # TOTAL_AMOUNT > 0
 
-validation:
-  # Customer dimension lookup query
-  customer_lookup_query: |
-    SELECT CUSTOMER_KEY 
-    FROM DIM_CUSTOMER 
-    WHERE CUSTOMER_ID = ? 
-    AND IS_CURRENT = 'Y'
-    AND ? BETWEEN EFFECTIVE_FROM_DATE AND EFFECTIVE_TO_DATE
+# Transformation metadata
+metadata:
+  load_date_field: "LOAD_DATE"
+  source_system: "CSV_FILE"
+  record_id_field: "RECORD_ID"
+  record_id_start: 1
+  record_id_increment: 1
+
+target:
+  type: "database"
+  connection_pool: "STG_DATABASE_CONNECTION_POOL"
+  table_name: "STG_SALES"
+  schema: "staging"
+  load_type: "normal"
+  commit_interval: 10000
   
-  # Product dimension lookup query
-  product_lookup_query: |
-    SELECT PRODUCT_KEY, COST_PRICE 
-    FROM DIM_PRODUCT 
-    WHERE PRODUCT_ID = ?
-  
-  # Date dimension lookup query (if applicable)
-  date_lookup_query: |
-    SELECT DATE_KEY 
-    FROM DIM_DATE 
-    WHERE DATE_VALUE = TRUNC(?)
-  
-  # Batch size for validation
-  batch_size: 1000
-  
-  # Enable parallel validation
-  parallel_threads: 4
+  # Target fields
+  fields:
+    - "RECORD_ID"
+    - "TRANSACTION_ID"
+    - "TRANSACTION_DATE"
+    - "CUSTOMER_ID"
+    - "PRODUCT_ID"
+    - "QUANTITY"
+    - "UNIT_PRICE"
+    - "DISCOUNT_PERCENT"
+    - "TAX_AMOUNT"
+    - "TOTAL_AMOUNT"
+    - "PAYMENT_METHOD"
+    - "STORE_ID"
+    - "REGION"
+    - "LOAD_DATE"
+    - "SOURCE_SYSTEM"
 
 error_handling:
-  # Reject records with missing keys
-  reject_orphaned_records: true
-  
-  # Log level (DEBUG, INFO, WARN, ERROR)
+  error_table: "STG_SALES_ERRORS"
+  error_log_path: "/data/logs/sales_staging_errors.log"
+  max_retry_attempts: 3
+  retry_delay_seconds: 5
+
+monitoring:
   log_level: "INFO"
+  success_notification_email: "etl-team@company.com"
+  failure_notification_email: "etl-team@company.com"
   
-  # Error notification email
-  notification_email: "etl-team@company.com"
-  
-  # Maximum error threshold (percentage)
-  max_error_threshold_percent: 5.0
-  
-  # Stop on threshold breach
-  stop_on_threshold_breach: true
-
-logging:
-  # Detailed error log attributes
-  log_attributes:
-    - "transaction_id"
-    - "customer_id"
-    - "product_id"
-    - "transaction_date"
-    - "error_type"
-    - "error_message"
-    - "validation_timestamp"
-  
-  # Error categories
-  error_categories:
-    missing_customer: "MISSING_CUSTOMER_KEY"
-    missing_product: "MISSING_PRODUCT_KEY"
-    missing_date: "MISSING_DATE_KEY"
-    invalid_data: "INVALID_DATA"
-    multiple_matches: "MULTIPLE_MATCHES"
-
-metrics:
-  # Track validation metrics
-  enable_metrics: true
-  metrics_attributes:
-    - "total_records"
-    - "valid_records"
-    - "invalid_records"
-    - "customer_key_errors"
-    - "product_key_errors"
-    - "date_key_errors"
-    - "validation_duration_ms"
-
 performance:
-  # Connection pool settings
-  max_connections: 10
-  connection_timeout_seconds: 30
+  batch_size: 1000
+  concurrent_tasks: 4
+  buffer_size: 10000
   
-  # Query timeout
-  query_timeout_seconds: 60
-  
-  # Cache settings for lookups
-  enable_lookup_cache: true
-  cache_size: 10000
-  cache_ttl_minutes: 60
-
-output:
-  # Valid records flow file
-  valid_records_relationship: "valid"
-  
-  # Invalid records flow file
-  invalid_records_relationship: "invalid"
-  
-  # Route to fact table loader
-  fact_loader_port_name: "validated_sales"
-  
-  # Route to reject handler
-  reject_handler_port_name: "rejected_sales"
+validation:
+  enforce_schema: true
+  allow_null_customer_id: false
+  allow_null_product_id: false
+  allow_negative_quantity: false
+  allow_negative_amount: false
