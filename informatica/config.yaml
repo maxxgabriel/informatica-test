@@ -1,94 +1,251 @@
-# Full Refresh Workflow Configuration
-# Monthly truncate and reload for dimension and fact tables
-
+# NiFi Configuration
 nifi:
-  base_url: "http://localhost:8080/nifi-api"
-  process_group_name: "wf_FULL_REFRESH"
-  
+  host: "${NIFI_HOST:localhost}"
+  port: "${NIFI_PORT:8080}"
+  username: "${NIFI_USERNAME:admin}"
+  password: "${NIFI_PASSWORD:admin}"
+  use_ssl: "${NIFI_USE_SSL:false}"
+  verify_ssl: "${NIFI_VERIFY_SSL:false}"
+  api_version: "1.18.0"
+  timeout: 30
+  retry_count: 3
+  retry_delay: 5
+
+# Database Configuration
 database:
   staging:
-    host: "${DB_STAGING_HOST}"
-    port: 5432
-    database: "${DB_STAGING_NAME}"
-    username: "${DB_STAGING_USER}"
-    password: "${DB_STAGING_PASS}"
-    
+    host: "${DB_STG_HOST:localhost}"
+    port: "${DB_STG_PORT:5432}"
+    database: "${DB_STG_NAME:staging_db}"
+    username: "${DB_STG_USER:stg_user}"
+    password: "${DB_STG_PASSWORD:stg_password}"
+    driver: "org.postgresql.Driver"
+    connection_pool_size: 10
+
   warehouse:
-    host: "${DB_WAREHOUSE_HOST}"
-    port: 5432
-    database: "${DB_WAREHOUSE_NAME}"
-    username: "${DB_WAREHOUSE_USER}"
-    password: "${DB_WAREHOUSE_PASS}"
+    host: "${DB_DWH_HOST:localhost}"
+    port: "${DB_DWH_PORT:5432}"
+    database: "${DB_DWH_NAME:warehouse_db}"
+    username: "${DB_DWH_USER:dwh_user}"
+    password: "${DB_DWH_PASSWORD:dwh_password}"
+    driver: "org.postgresql.Driver"
+    connection_pool_size: 20
 
-source_files:
-  base_path: "${SOURCE_FILE_PATH:/data/sources}"
-  archive_path: "${ARCHIVE_PATH:/data/archive}"
-  customer: "customer_master.csv"
-  product: "product_master.csv"
-  sales: "sales_transactions_*.csv"
+# Data Sources
+data_sources:
+  customer_file:
+    path: "${SOURCE_PATH:/data/input}/customer_master.csv"
+    format: "CSV"
+    delimiter: ","
+    header: true
+    encoding: "UTF-8"
 
-staging_tables:
-  customer: "STG_CUSTOMER"
-  product: "STG_PRODUCT"
-  sales: "STG_SALES"
+  product_file:
+    path: "${SOURCE_PATH:/data/input}/product_master.csv"
+    format: "CSV"
+    delimiter: ","
+    header: true
+    encoding: "UTF-8"
 
-dimension_tables:
-  customer: "DIM_CUSTOMER"
-  product: "DIM_PRODUCT"
+  sales_file:
+    path: "${SOURCE_PATH:/data/input}/sales_transactions_*.csv"
+    format: "CSV"
+    delimiter: ","
+    header: true
+    encoding: "UTF-8"
+    pattern: "sales_transactions_[0-9]*.csv"
 
-fact_tables:
-  sales: "FACT_SALES"
+# Process Groups Configuration
+process_groups:
+  root_pg_name: "ETL_Data_Warehouse"
+  
+  staging_pg:
+    name: "01_Staging_Loads"
+    description: "Load data from source files to staging tables"
+    position:
+      x: 100
+      y: 100
 
-notifications:
-  error_email: "${ERROR_EMAIL_TO:etl-team@company.com}"
-  dba_email: "${DBA_EMAIL:dba-team@company.com}"
-  manager_email: "${MANAGER_EMAIL:manager@company.com}"
+  dimension_pg:
+    name: "02_Dimension_Loads"
+    description: "Load dimension tables with SCD logic"
+    position:
+      x: 100
+      y: 400
 
-execution:
-  bulk_load_batch_size: 100000
-  commit_interval: 50000
-  partition_count: 4
-  enable_parallelism: true
+  fact_pg:
+    name: "03_Fact_Loads"
+    description: "Load fact tables with calculations"
+    position:
+      x: 100
+      y: 700
+
+# Workflow Schedules
+schedules:
+  daily_sales_load:
+    cron: "0 0 2 * * ?"  # Daily at 2 AM
+    timezone: "America/New_York"
+    enabled: true
+
+  weekly_dimension_refresh:
+    cron: "0 0 1 ? * SUN"  # Every Sunday at 1 AM
+    timezone: "America/New_York"
+    enabled: true
+
+  monthly_full_refresh:
+    cron: "0 0 0 1 * ?"  # First day of month at midnight
+    timezone: "America/New_York"
+    enabled: false
+
+# ETL Configuration
+etl:
+  batch_size: 10000
+  commit_interval: 10000
   max_concurrent_tasks: 4
+  error_threshold: 100
+  enable_partitioning: true
+  partition_count: 4
 
-scripts:
-  pre_refresh_validation: "/scripts/pre_refresh_validation.sh"
-  full_backup: "/scripts/full_backup.sh"
-  disable_constraints: "/scripts/disable_constraints.sh"
-  enable_constraints: "/scripts/enable_constraints.sh"
-  truncate_staging: "/scripts/truncate_staging.sh"
-  truncate_dimensions: "/scripts/truncate_dimensions.sh"
-  truncate_fact: "/scripts/truncate_fact.sh"
-  rebuild_indexes: "/scripts/rebuild_indexes.sh"
-  update_statistics: "/scripts/update_statistics.sh"
-  data_validation: "/scripts/data_validation.sh"
+  staging:
+    truncate_before_load: false
+    enable_bulk_load: true
 
-sequence_generators:
-  customer_key:
-    start_value: 1
-    increment: 1
-    cache_size: 1000
-  product_key:
-    start_value: 1
-    increment: 1
-    cache_size: 1000
-  sales_key:
-    start_value: 1
-    increment: 1
-    cache_size: 1000
-
-scd_config:
-  customer:
-    type: "TYPE2"
+  dimension:
+    scd_type: 2  # For customer dimension
     effective_date_column: "EFFECTIVE_FROM_DATE"
     expiry_date_column: "EFFECTIVE_TO_DATE"
     current_flag_column: "IS_CURRENT"
     default_expiry_date: "9999-12-31"
-  product:
-    type: "TYPE1"
+
+  fact:
+    enable_bulk_load: true
+    validate_foreign_keys: true
+    calculate_measures: true
+
+# Data Quality Rules
+data_quality:
+  enable_validation: true
+  fail_on_error: false
+  
+  rules:
+    customer:
+      - field: "CUSTOMER_ID"
+        rule: "not_null"
+      - field: "EMAIL"
+        rule: "email_format"
+      - field: "PHONE"
+        rule: "phone_format"
+        pattern: "^[0-9]{10}$"
+
+    product:
+      - field: "PRODUCT_ID"
+        rule: "not_null"
+      - field: "UNIT_PRICE"
+        rule: "greater_than"
+        value: 0
+      - field: "COST_PRICE"
+        rule: "greater_than_or_equal"
+        value: 0
+
+    sales:
+      - field: "TRANSACTION_ID"
+        rule: "not_null"
+      - field: "QUANTITY"
+        rule: "greater_than"
+        value: 0
+      - field: "TOTAL_AMOUNT"
+        rule: "greater_than"
+        value: 0
+
+# Notification Configuration
+notifications:
+  email:
+    enabled: true
+    smtp_host: "${SMTP_HOST:smtp.company.com}"
+    smtp_port: "${SMTP_PORT:587}"
+    use_tls: true
+    from_address: "nifi-etl@company.com"
     
-workflow:
-  schedule: "0 0 1 * *"  # First day of month at midnight
-  timeout_seconds: 14400  # 4 hours
-  retry_attempts: 3
-  retry_delay_seconds: 300
+    recipients:
+      success:
+        - "etl-team@company.com"
+      failure:
+        - "etl-team@company.com"
+        - "dba-team@company.com"
+      critical:
+        - "etl-team@company.com"
+        - "dba-team@company.com"
+        - "manager@company.com"
+
+# Logging Configuration
+logging:
+  level: "${LOG_LEVEL:INFO}"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+  handlers:
+    console:
+      enabled: true
+      level: "INFO"
+    
+    file:
+      enabled: true
+      level: "DEBUG"
+      path: "${LOG_PATH:/var/log/nifi-etl}"
+      max_bytes: 10485760  # 10MB
+      backup_count: 5
+    
+    syslog:
+      enabled: false
+      host: "syslog.company.com"
+      port: 514
+
+# Archive Configuration
+archive:
+  enabled: true
+  path: "${ARCHIVE_PATH:/data/archive}"
+  retention_days: 90
+  compress: true
+  compression_format: "gzip"
+
+# Monitoring & Metrics
+monitoring:
+  enabled: true
+  metrics_port: 9090
+  health_check_interval: 60
+  
+  thresholds:
+    cpu_usage: 80
+    memory_usage: 85
+    disk_usage: 90
+    queue_size: 10000
+
+# Environment-specific overrides
+environments:
+  development:
+    nifi:
+      host: "dev-nifi.company.com"
+    database:
+      staging:
+        host: "dev-db.company.com"
+      warehouse:
+        host: "dev-dwh.company.com"
+    etl:
+      batch_size: 1000
+    logging:
+      level: "DEBUG"
+
+  production:
+    nifi:
+      host: "prod-nifi.company.com"
+      use_ssl: true
+      verify_ssl: true
+    database:
+      staging:
+        host: "prod-db.company.com"
+      warehouse:
+        host: "prod-dwh.company.com"
+    etl:
+      batch_size: 50000
+      max_concurrent_tasks: 8
+    logging:
+      level: "INFO"
